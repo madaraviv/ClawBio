@@ -57,6 +57,12 @@ class Instrument:
     se_outcome: float
     pval_outcome: float
     f_statistic: float = 0.0
+    # Sample sizes, optional and read from the input when present. The Steiger
+    # directionality test needs them to express each association as a variance
+    # explained; without them it can still order the two sides, but only under an
+    # assumption it then has to state. See `steiger_test`.
+    n_exposure: int | None = None
+    n_outcome: int | None = None
 
     @property
     def is_palindromic(self) -> bool:
@@ -128,7 +134,10 @@ class SensitivityResults:
     n_weak_instruments: int = 0
     i_squared_gx: float = 0.0
     steiger_correct_direction: bool = True
-    steiger_pvalue: float = 1.0
+    # None when the test could order the two sides but had no basis for a p-value; the
+    # reason is in `steiger_note`, and every writer prints that instead of a number.
+    steiger_pvalue: float | None = None
+    steiger_note: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +192,9 @@ def egger_weighted_dispersion(w: np.ndarray, bx: np.ndarray) -> float:
 
 def mr_egger(instruments: list[Instrument]) -> tuple[MREstimate, float, float, float]:
     """MR-Egger regression. Returns (estimate, intercept, intercept_se, intercept_p).
+
+    Bowden J, Davey Smith G, Burgess S 2015, Int J Epidemiol 44(2):512-525
+    (doi:10.1093/ije/dyv080; PMID 26050253).
 
     Two INDEPENDENT conditions have to hold, and neither implies the other:
 
@@ -321,8 +333,52 @@ def weighted_median(instruments: list[Instrument], n_boot: int = 1000) -> MREsti
     )
 
 
-def weighted_mode(instruments: list[Instrument], bandwidth: float = 0.5) -> MREstimate:
-    """Weighted mode estimator (Hartwig et al., 2017)."""
+def _weighted_mode_point(ratios: np.ndarray, weights: np.ndarray,
+                         bandwidth: float) -> float:
+    """The mode of the weighted kernel density over the ratios."""
+    span = float(np.max(ratios) - np.min(ratios))
+    pad = max(span, bandwidth) if span or bandwidth else 1.0
+    x_grid = np.linspace(float(np.min(ratios)) - pad, float(np.max(ratios)) + pad, 1000)
+    density = np.zeros_like(x_grid)
+    for r, w in zip(ratios, weights):
+        density += w * stats.norm.pdf(x_grid, loc=r, scale=bandwidth)
+    return float(x_grid[int(np.argmax(density))])
+
+
+def weighted_mode(instruments: list[Instrument], phi: float = 1.0,
+                  n_boot: int = 1000, seed: int = 0) -> MREstimate:
+    """Weighted mode estimator.
+
+    Hartwig FP, Davey Smith G, Bowden J 2017, Int J Epidemiol 46(6):1985-1998
+    (doi:10.1093/ije/dyx102; PMID 29040600), which specifies both a bandwidth
+    proportional to the spread of the ratios and a bootstrapped standard error.
+
+    Two changes from a plain kernel mode, both of which the reference method specifies
+    and neither of which is cosmetic.
+
+    THE BANDWIDTH IS PROPORTIONAL TO THE SPREAD OF THE RATIOS, not an absolute constant.
+    It used to default to 0.5 whatever the data looked like. On instruments whose ratios
+    have a standard deviation of 0.28 -- an ordinary MR scale -- a bandwidth of 0.5 is
+    nearly twice the entire spread, so the kernels merge into one blob and the "mode"
+    slides onto the weighted mean: measured 0.5469 against an IVW estimate of 0.5281,
+    while the same data at a bandwidth of 0.1 gives 0.6679. An estimator whose whole
+    purpose is to disagree with the mean when most instruments agree with each other
+    cannot have a smoothing width that swamps the disagreement. `phi` now scales the
+    ratios' own standard deviation, so the estimator is invariant to the units of the
+    data in the way the mean and the median already were.
+
+    THE STANDARD ERROR IS A BOOTSTRAP. The previous `2 / sum(|bx_i|/sy_i)` is a function
+    of the instrument count and the outcome standard errors and NOTHING ELSE -- it does
+    not look at the dispersion of the ratios whose mode it is reporting. Measured over
+    ratio standard deviations from 0.0000 to 0.8265, an 800-fold change in how spread
+    out the estimates are, the reported SE did not move at all: 0.02079 at n=10 and
+    0.00429 at n=40 in every case. It was most confident exactly where the point
+    estimate was least stable -- at the widest dispersion the mode itself moved from
+    0.9673 to 0.3958 between two samples whose SEs were 0.0208 and 0.0043.
+
+    The bootstrap resamples each outcome effect from its own reported uncertainty and
+    re-derives the mode, so the SE reflects how much the mode actually moves.
+    """
     bx = np.array([i.beta_exposure for i in instruments])
     by = np.array([i.beta_outcome for i in instruments])
     sy = np.array([i.se_outcome for i in instruments])
@@ -331,14 +387,25 @@ def weighted_mode(instruments: list[Instrument], bandwidth: float = 0.5) -> MREs
     se_ratios = sy / np.abs(bx)
     weights = 1.0 / se_ratios
 
-    x_grid = np.linspace(np.min(ratios) - 1, np.max(ratios) + 1, 1000)
-    density = np.zeros_like(x_grid)
-    for r, w in zip(ratios, weights):
-        density += w * stats.norm.pdf(x_grid, loc=r, scale=bandwidth)
-    beta_mode = float(x_grid[np.argmax(density)])
+    sd_ratios = float(np.std(ratios))
+    # A degenerate spread (every ratio identical) has no scale to take a fraction of;
+    # fall back to the ratios' own magnitude so the kernel still has a width.
+    bandwidth = phi * sd_ratios if sd_ratios > 0 else max(
+        float(np.mean(np.abs(ratios))) * 0.1, 1e-6)
 
-    se_mode = float(1.0 / (np.sum(weights) * 0.5))
-    z = beta_mode / se_mode if se_mode > 0 else 0
+    beta_mode = _weighted_mode_point(ratios, weights, bandwidth)
+
+    rng = np.random.default_rng(seed)
+    draws = np.empty(n_boot)
+    for b in range(n_boot):
+        by_b = rng.normal(by, sy)
+        ratios_b = by_b / bx
+        sd_b = float(np.std(ratios_b))
+        bw_b = phi * sd_b if sd_b > 0 else bandwidth
+        draws[b] = _weighted_mode_point(ratios_b, weights, bw_b)
+    se_mode = float(np.std(draws, ddof=1))
+
+    z = beta_mode / se_mode if se_mode > 0 else 0.0
     pval = 2 * stats.norm.sf(abs(z))
 
     return MREstimate(
@@ -364,18 +431,69 @@ def cochran_q(instruments: list[Instrument], ivw_est: MREstimate) -> tuple[float
     return q, p, df
 
 
-def steiger_test(instruments: list[Instrument]) -> tuple[bool, float]:
-    """Steiger directionality test — checks causal direction."""
-    r2_exp = np.array([2 * i.eaf * (1 - i.eaf) * (i.beta_exposure ** 2) for i in instruments])
-    r2_out = np.array([2 * i.eaf * (1 - i.eaf) * (i.beta_outcome ** 2) for i in instruments])
-    total_r2_exp = float(np.sum(r2_exp))
-    total_r2_out = float(np.sum(r2_out))
-    correct = total_r2_exp > total_r2_out
-    diff = total_r2_exp - total_r2_out
-    se_diff = math.sqrt(total_r2_exp + total_r2_out) * 0.01
-    z = diff / se_diff if se_diff > 0 else 0
-    p = 2 * stats.norm.sf(abs(z))
-    return correct, float(p)
+def steiger_test(instruments: list[Instrument]) -> tuple[bool, float | None, str]:
+    """Steiger directionality test. Returns (correct_direction, p_value_or_None, note).
+
+    Hemani G, Tilling K, Davey Smith G 2017, PLoS Genet 13(11):e1007081
+    (doi:10.1371/journal.pgen.1007081; PMID 29149188).
+
+    Compares how much variance the instruments explain in the exposure against how much
+    they explain in the outcome; more in the exposure supports exposure -> outcome.
+
+    THE VARIANCE EXPLAINED IS COMPUTED FROM THE Z-STATISTIC, WHICH IS UNIT-FREE.
+    The previous form, `r2 = 2*eaf*(1-eaf)*beta^2`, is a variance explained only if the
+    trait happens to have variance 1: there is no division by the trait's variance and
+    no sample size anywhere in it. So the verdict moved when the outcome was expressed
+    in different units, which is not a scientific property of anything. Measured on ten
+    instruments with a true ratio of 0.5, rescaling the outcome alone -- mmol/L to
+    mg/dL, say -- flipped `correct` from True to False between factors of 1 and 3, with
+    p astronomically small on BOTH sides, so it reported near-certainty in opposite
+    directions depending on a unit choice.
+
+    `r2 = z^2 / (z^2 + n)` is the standard conversion for a continuous trait, and z is
+    invariant to the units of beta because the standard error carries the same units.
+
+    Sample sizes are OPTIONAL, and what is reported depends on what is available:
+
+    - both present: a variance explained per side, and a p-value from the Fisher
+      z-transform difference of two INDEPENDENT correlations -- which is what two-sample
+      MR has by construction, the exposure and outcome coming from different studies.
+    - absent: with equal sample sizes the comparison reduces to |z_exposure| >
+      |z_outcome|, so the DIRECTION is still well defined and still unit-free. The
+      p-value is not: it is returned as None with the assumption stated in `note`,
+      rather than as a number from the previous `sqrt(r2_exp + r2_out) * 0.01`, whose
+      0.01 has no derivation.
+    """
+    z_exp = np.array([i.beta_exposure / i.se_exposure if i.se_exposure else 0.0
+                      for i in instruments])
+    z_out = np.array([i.beta_outcome / i.se_outcome if i.se_outcome else 0.0
+                      for i in instruments])
+
+    n_exp = [i.n_exposure for i in instruments]
+    n_out = [i.n_outcome for i in instruments]
+    have_n = all(v is not None and v > 3 for v in n_exp + n_out)
+
+    if not have_n:
+        correct = bool(np.sum(z_exp ** 2) > np.sum(z_out ** 2))
+        return correct, None, (
+            "no sample sizes supplied, so the direction is read from the z-statistics "
+            "under the assumption that the exposure and outcome studies are of "
+            "comparable size; no p-value is computed")
+
+    r2_exp = float(np.sum(z_exp ** 2 / (z_exp ** 2 + np.array(n_exp, dtype=float))))
+    r2_out = float(np.sum(z_out ** 2 / (z_out ** 2 + np.array(n_out, dtype=float))))
+    correct = r2_exp > r2_out
+
+    # Fisher z on each side, then the difference of two independent correlations.
+    # Clamped below 1 because atanh is undefined at exactly 1, which a very strong
+    # instrument set can reach after summing.
+    r_exp = min(math.sqrt(max(r2_exp, 0.0)), 1.0 - 1e-12)
+    r_out = min(math.sqrt(max(r2_out, 0.0)), 1.0 - 1e-12)
+    n1, n2 = float(min(n_exp)), float(min(n_out))
+    se = math.sqrt(1.0 / (n1 - 3.0) + 1.0 / (n2 - 3.0))
+    z_stat = (math.atanh(r_exp) - math.atanh(r_out)) / se
+    p = float(2 * stats.norm.sf(abs(z_stat)))
+    return correct, p, ""
 
 
 def compute_i_squared_gx(instruments: list[Instrument]) -> float:
@@ -407,7 +525,7 @@ def run_sensitivity(instruments: list[Instrument], ivw_est: MREstimate) -> Sensi
     """Run full sensitivity analysis battery."""
     q, q_p, q_df = cochran_q(instruments, ivw_est)
     f_stats = [i.f_statistic for i in instruments]
-    steiger_dir, steiger_p = steiger_test(instruments)
+    steiger_dir, steiger_p, steiger_note = steiger_test(instruments)
     i2_gx = compute_i_squared_gx(instruments)
 
     return SensitivityResults(
@@ -418,6 +536,7 @@ def run_sensitivity(instruments: list[Instrument], ivw_est: MREstimate) -> Sensi
         i_squared_gx=i2_gx,
         steiger_correct_direction=steiger_dir,
         steiger_pvalue=steiger_p,
+        steiger_note=steiger_note,
     )
 
 
@@ -604,7 +723,9 @@ def _write_sensitivity_table(s, egger_int, egger_p, path):
         w.writerow(["Mean_F_statistic", f"{s.mean_f_statistic:.1f}", "N/A", f"{'WEAK' if s.mean_f_statistic < MIN_F_STAT else 'Strong'} instruments"])
         w.writerow(["Min_F_statistic", f"{s.min_f_statistic:.1f}", "N/A", f"{s.n_weak_instruments} weak instruments (F<{MIN_F_STAT})"])
         w.writerow(["I_squared_GX", f"{s.i_squared_gx:.4f}", "N/A", "SIMEX recommended" if s.i_squared_gx < 0.9 else "No SIMEX needed"])
-        w.writerow(["Steiger_direction", "Correct" if s.steiger_correct_direction else "REVERSED", f"{s.steiger_pvalue:.4f}", "Correct direction" if s.steiger_correct_direction else "WARNING: reversed causal direction"])
+        _sp = f"{s.steiger_pvalue:.4f}" if s.steiger_pvalue is not None else "not_applicable"
+        _si = "Correct direction" if s.steiger_correct_direction else "WARNING: reversed causal direction"
+        w.writerow(["Steiger_direction", "Correct" if s.steiger_correct_direction else "REVERSED", _sp, f"{_si}{'; ' + s.steiger_note if s.steiger_note else ''}"])
 
 
 def _write_instruments_table(instruments, path):
@@ -644,7 +765,10 @@ def _write_report_md(instruments, estimates, sens, egger_int, egger_p, exposure,
         f"| Mean F-statistic | {sens.mean_f_statistic:.1f} | — | {'**WARNING: weak instruments**' if sens.mean_f_statistic < MIN_F_STAT else 'Strong instruments'} |",
         f"| Weak instruments (F<{MIN_F_STAT}) | {sens.n_weak_instruments}/{len(instruments)} | — | {'**WARNING**' if sens.n_weak_instruments > 0 else 'None'} |",
         f"| I²_GX | {sens.i_squared_gx:.4f} | — | {'SIMEX correction recommended' if sens.i_squared_gx < 0.9 else 'Adequate'} |",
-        f"| Steiger direction | {'Correct' if sens.steiger_correct_direction else '**REVERSED**'} | {sens.steiger_pvalue:.4f} | {'Exposure → Outcome confirmed' if sens.steiger_correct_direction else '**WARNING: reverse causation**'} |",
+        (f"| Steiger direction | {'Correct' if sens.steiger_correct_direction else '**REVERSED**'} | "
+         f"{f'{sens.steiger_pvalue:.4f}' if sens.steiger_pvalue is not None else 'not computed'} | "
+         f"{'Exposure → Outcome confirmed' if sens.steiger_correct_direction else '**WARNING: reverse causation**'}"
+         f"{'; ' + sens.steiger_note if sens.steiger_note else ''} |"),
         "",
     ])
 
@@ -706,6 +830,8 @@ def _write_result_json(estimates, sens, egger_int, egger_p, exposure, outcome, o
             "n_weak": sens.n_weak_instruments,
             "i_squared_gx": round(sens.i_squared_gx, 4),
             "steiger_correct": sens.steiger_correct_direction,
+            "steiger_p": sens.steiger_pvalue,
+            "steiger_note": sens.steiger_note or None,
         },
         "disclaimer": DISCLAIMER,
     }
@@ -738,6 +864,7 @@ def load_demo_instruments() -> tuple[list[Instrument], str, str]:
         pval_exposure=s["pval_exposure"], beta_outcome=s["beta_outcome"],
         se_outcome=s["se_outcome"], pval_outcome=s["pval_outcome"],
         f_statistic=s["f_statistic"],
+        n_exposure=s.get("n_exposure"), n_outcome=s.get("n_outcome"),
     ) for s in data["instruments"]]
     return instruments, data["exposure"], data["outcome"]
 
@@ -821,6 +948,7 @@ def main() -> None:
             pval_exposure=s["pval_exposure"], beta_outcome=s["beta_outcome"],
             se_outcome=s["se_outcome"], pval_outcome=s["pval_outcome"],
             f_statistic=s["f_statistic"],
+            n_exposure=s.get("n_exposure"), n_outcome=s.get("n_outcome"),
         ) for s in data["instruments"]]
         exposure = data.get("exposure", "Exposure")
         outcome = data.get("outcome", "Outcome")

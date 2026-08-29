@@ -116,7 +116,7 @@ You are **Mendelian Randomisation**, a specialised ClawBio agent for causal infe
 
 | Format | Extension | Required Fields | Example |
 |--------|-----------|-----------------|---------|
-| Harmonised instruments JSON | `.json` | SNP, effect_allele, other_allele, eaf, beta_exposure, se_exposure, pval_exposure, beta_outcome, se_outcome, pval_outcome | `demo_instruments.json` |
+| Harmonised instruments JSON | `.json` | SNP, effect_allele, other_allele, eaf, beta_exposure, se_exposure, pval_exposure, beta_outcome, se_outcome, pval_outcome; optional `n_exposure` / `n_outcome` (sample sizes, needed for a Steiger p-value) | `demo_instruments.json` |
 
 ## Workflow
 
@@ -154,14 +154,15 @@ Expected output: A full MR report for 30 synthetic BMI → T2D instruments showi
 
 1. **IVW**: beta = sum(w * bx * by) / sum(w * bx²), with multiplicative random-effects variance inflation (Burgess et al., 2013)
 2. **MR-Egger**: Weighted linear regression of by on bx with intercept; slope = causal estimate, intercept = pleiotropy (Bowden et al., 2015). Reported as **not applicable**, with a stated reason, when it is undefined on the given instruments: fewer than 3 of them (it fits two parameters, so below 3 there is no residual degree of freedom), or exposure effects too close to identical for the slope to be identified. Never a number in those cases.
-3. **Weighted Median**: Median of Wald ratios weighted by inverse-variance; consistent when ≥50% weight from valid instruments (Bowden et al., 2016)
-4. **Weighted Mode**: Kernel density mode of weighted Wald ratios (Hartwig et al., 2017)
+3. **Weighted Median**: Median of Wald ratios weighted by inverse-variance; consistent when ≥50% weight from valid instruments (Bowden et al., 2016, doi:10.1002/gepi.21965; PMID 27061298)
+4. **Weighted Mode**: Kernel density mode of weighted Wald ratios, with a bandwidth proportional to the spread of the ratios (`phi` x their standard deviation) and a bootstrapped standard error (Hartwig et al., 2017)
 
 **Key thresholds**:
 - F-statistic > 10 for instrument strength (Staiger & Stock, 1997)
 - I²_GX > 0.9 for MR-Egger validity; SIMEX recommended below (Bowden et al., 2016)
 - Cochran's Q P < 0.05 indicates heterogeneity
 - Egger intercept P < 0.05 indicates directional pleiotropy
+- Steiger directionality is computed from z-statistics, so it does not depend on the units the traits are reported in; supply `n_exposure` and `n_outcome` per instrument for a p-value, without them only the direction is reported
 - MR-Egger needs >= 3 instruments and at least two distinct exposure effects; below either it is not applicable rather than imprecise
 
 ## Example Output

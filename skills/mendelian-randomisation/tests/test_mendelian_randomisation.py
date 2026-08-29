@@ -134,8 +134,13 @@ class TestSensitivity:
         assert p > 0.05
 
     def test_steiger_correct_direction(self, demo_instruments):
-        correct, p = steiger_test(demo_instruments)
+        # UPDATED: the test now returns (correct, p_or_None, note). The p is None here
+        # because the demo instruments carry no sample sizes, and without them there is
+        # no basis for one -- see `test_steiger_verdict_is_invariant_to_the_units`.
+        correct, p, note = steiger_test(demo_instruments)
         assert correct is True
+        assert p is None
+        assert "no sample sizes" in note
 
     def test_i_squared_gx(self, demo_instruments):
         i2 = compute_i_squared_gx(demo_instruments)
@@ -479,3 +484,140 @@ def test_a_zero_outcome_standard_error_is_refused_rather_than_passed_through():
     assert est.applicable is False
     assert "not identified" in est.reason
     assert math.isnan(est.estimate) and math.isnan(intercept)
+
+
+# ---------------------------------------------------------------------------
+# Steiger directionality: the verdict must not depend on the units of the traits
+# ---------------------------------------------------------------------------
+
+def _steiger_input(unit=1.0, n_exp=None, n_out=None, seed=7):
+    rng = np.random.default_rng(seed)
+    out = []
+    for k in range(10):
+        bx = float(rng.uniform(0.05, 0.4))
+        out.append(Instrument(
+            snp=f"rs{k}", effect_allele="A", other_allele="G", eaf=0.3,
+            beta_exposure=bx, se_exposure=bx / 8, pval_exposure=1e-10,
+            beta_outcome=bx * 0.5 * unit, se_outcome=0.02 * unit, pval_outcome=0.01,
+            f_statistic=64.0, n_exposure=n_exp, n_outcome=n_out))
+    return out
+
+
+def test_the_steiger_verdict_is_invariant_to_the_units_of_the_outcome():
+    """Rescaling the outcome changes no science, so it must change no verdict.
+
+    `by -> k*by, sy -> k*sy` is a change of units -- mmol/L to mg/dL. The old
+    variance-explained term `2*eaf*(1-eaf)*beta^2` has no trait variance in it, so it
+    scaled with k and flipped `correct` from True to False between k=1 and k=3, with p
+    astronomically small on BOTH sides. z-statistics are unit-free, so the verdict is
+    now constant across five orders of magnitude.
+    """
+    verdicts = {u: steiger_test(_steiger_input(unit=u))[0]
+                for u in (0.1, 1.0, 3.0, 10.0, 100.0, 1000.0)}
+    assert set(verdicts.values()) == {True}, verdicts
+
+
+def test_steiger_reports_a_p_value_only_when_it_has_the_sample_sizes():
+    """Without n there is no basis for one, and the old 0.01 had no derivation."""
+    correct, p, note = steiger_test(_steiger_input())
+    assert correct is True and p is None and "no sample sizes" in note
+
+    correct, p, note = steiger_test(_steiger_input(n_exp=100_000, n_out=100_000))
+    assert correct is True
+    assert p is not None and 0.0 <= p <= 1.0
+    assert note == ""
+
+
+def test_steiger_detects_a_genuinely_reversed_direction():
+    """The false-positive direction: it must still be able to say REVERSED."""
+    insts = _steiger_input()
+    reversed_insts = [
+        Instrument(snp=i.snp, effect_allele=i.effect_allele, other_allele=i.other_allele,
+                   eaf=i.eaf, beta_exposure=i.beta_outcome, se_exposure=i.se_outcome,
+                   pval_exposure=i.pval_outcome, beta_outcome=i.beta_exposure,
+                   se_outcome=i.se_exposure, pval_outcome=i.pval_exposure,
+                   f_statistic=i.f_statistic)
+        for i in insts
+    ]
+    assert steiger_test(insts)[0] is True
+    assert steiger_test(reversed_insts)[0] is False
+
+
+# ---------------------------------------------------------------------------
+# Weighted mode: the SE must react to the dispersion of the ratios
+# ---------------------------------------------------------------------------
+
+def _mode_input(spread, n=15, seed=3):
+    rng = np.random.default_rng(seed)
+    out = []
+    for k in range(n):
+        bx = float(rng.uniform(0.05, 0.4))
+        ratio = 0.5 + float(rng.normal(0, spread))
+        out.append(Instrument(f"rs{k}", "A", "G", 0.3, bx, bx / 8, 1e-10,
+                              bx * ratio, 0.02, 0.01, 64.0))
+    return out
+
+
+def test_the_weighted_mode_se_can_tell_agreement_from_a_two_camp_split():
+    """The old SE was `2 / sum(|bx|/sy)` -- the instrument count and the outcome standard
+    errors, and nothing about the ratios whose mode it reports.
+
+    So it returns THE SAME NUMBER for instruments that all agree and for instruments
+    that split into two opposed clusters. Measured on 15 instruments with identical
+    exposure effects and outcome SEs: 0.01333 for one tight cluster around 0.50, and
+    0.01333 for an 8-versus-7 split between 0.20 and 0.80. The mode is a completely
+    different kind of claim in those two datasets and the reported precision was
+    unchanged. The bootstrap separates them, and is 2.4x to 3.9x wider throughout, so
+    the closed form was also over-confident.
+    """
+    def _fixed(ratios):
+        return [Instrument(f"rs{k}", "A", "G", 0.3, 0.2, 0.025, 1e-10,
+                           0.2 * r, 0.02, 0.01, 64.0) for k, r in enumerate(ratios)]
+
+    tight = weighted_mode(_fixed([0.5] * 7 + [0.51, 0.49, 0.5, 0.52, 0.48, 0.5, 0.51, 0.49]),
+                          n_boot=300)
+    split = weighted_mode(_fixed([0.2] * 8 + [0.8] * 7), n_boot=300)
+
+    # same n, same outcome SEs, same exposure effects -- the OLD formula is blind here
+    old_se = 1.0 / (sum(1.0 / (0.02 / 0.2) for _ in range(15)) * 0.5)
+    assert split.se > 1.4 * tight.se, (tight.se, split.se)
+    assert split.se > 2 * old_se and tight.se > 2 * old_se, (old_se, tight.se, split.se)
+
+
+def test_the_weighted_mode_bandwidth_scales_with_the_data_not_a_constant():
+    """A fixed 0.5 stops the mode being a mode.
+
+    Fifteen instruments split 9 to 6 between ratios of 0.20 and 0.80. The mode is 0.20,
+    by construction -- that is the larger camp, and separating it from the weighted mean
+    is the entire reason to run this estimator. The weighted mean is 0.4400.
+
+    With the old absolute bandwidth of 0.5, larger than the 0.6 gap between the camps,
+    the kernels merge and the "mode" comes out at 0.4090: the mean, to within rounding.
+    With a bandwidth proportional to the spread of the ratios it recovers 0.20 exactly at
+    phi = 0.3 and 0.5, and 0.2721 at the published default of phi = 1, which is ordinary
+    kernel over-smoothing rather than a collapse.
+    """
+    from mendelian_randomisation import _weighted_mode_point
+
+    insts = [Instrument(f"rs{k}", "A", "G", 0.3, 0.2, 0.025, 1e-10,
+                        0.2 * r, 0.02, 0.01, 64.0)
+             for k, r in enumerate([0.2] * 9 + [0.8] * 6)]
+    ratios = np.array([i.beta_outcome / i.beta_exposure for i in insts])
+    weights = np.array([1.0 / (i.se_outcome / abs(i.beta_exposure)) for i in insts])
+    mean = ivw(insts).estimate
+
+    absolute = _weighted_mode_point(ratios, weights, 0.5)
+    proportional = _weighted_mode_point(ratios, weights, 0.5 * float(ratios.std()))
+
+    assert abs(absolute - mean) < 0.05, (absolute, mean)      # collapsed onto the mean
+    assert proportional == pytest.approx(0.20, abs=0.02)      # found the larger camp
+    assert abs(proportional - mean) > 0.15
+
+    # and the shipped default is scale-free, which the absolute one was not
+    scaled = [Instrument(i.snp, i.effect_allele, i.other_allele, i.eaf, i.beta_exposure,
+                         i.se_exposure, i.pval_exposure, i.beta_outcome * 100,
+                         i.se_outcome * 100, i.pval_outcome, i.f_statistic)
+              for i in insts]
+    a = weighted_mode(insts, n_boot=100).estimate
+    b = weighted_mode(scaled, n_boot=100).estimate / 100
+    assert a == pytest.approx(b, rel=0.05), (a, b)
