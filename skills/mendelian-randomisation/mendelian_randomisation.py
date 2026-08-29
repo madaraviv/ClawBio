@@ -72,6 +72,18 @@ class Instrument:
         return self.f_statistic < MIN_F_STAT
 
 
+# MR-Egger needs at least this many instruments to be defined: it fits a slope AND an
+# intercept, so at n < 3 there is no residual degree of freedom and no dispersion to
+# estimate, however well-conditioned the data is.
+MIN_EGGER_INSTRUMENTS = 3
+
+# Dimensionless conditioning floor for the Egger slope, replacing an absolute one.
+# rel = Var_w(bx) / E_w[bx^2] lies in [0, 1] and is invariant to the units of the data.
+# Below sqrt(machine epsilon) the Egger SE is inflated by more than ~8,000x, so the
+# estimate is uninformative rather than merely imprecise.
+EGGER_MIN_RELATIVE_VARIANCE = math.sqrt(sys.float_info.epsilon)  # ~1.49e-8
+
+
 @dataclass
 class MREstimate:
     method: str
@@ -81,6 +93,26 @@ class MREstimate:
     ci_upper: float
     pvalue: float
     n_snps: int
+    # An estimator can be UNDEFINED on a given instrument set rather than merely
+    # imprecise. Without somewhere to say that, the only options are to raise (which
+    # discards the estimates already computed correctly) or to emit a number that reads
+    # exactly like a result. `applicable=False` carries `reason` instead, and every
+    # consumer below skips the row and prints the reason in its place.
+    applicable: bool = True
+    reason: str = ""
+
+    @classmethod
+    def not_applicable(cls, method: str, n_snps: int, reason: str) -> "MREstimate":
+        """An estimator that does not apply to this instrument set.
+
+        The numeric fields are NaN on purpose: any consumer that ignores `applicable`
+        and formats them anyway produces a visible `nan` rather than a plausible number,
+        and the JSON writer refuses to serialise them at all.
+        """
+        return cls(method=method, estimate=float("nan"), se=float("nan"),
+                   ci_lower=float("nan"), ci_upper=float("nan"),
+                   pvalue=float("nan"), n_snps=n_snps,
+                   applicable=False, reason=reason)
 
 
 @dataclass
@@ -129,8 +161,45 @@ def ivw(instruments: list[Instrument]) -> MREstimate:
     )
 
 
+def egger_weighted_dispersion(w: np.ndarray, bx: np.ndarray) -> float:
+    """`sum_w * sum_i w_i (bx_i - xbar_w)^2` -- the MR-Egger slope denominator.
+
+    Its own function so the property it exists for can be tested directly. That
+    property is STRUCTURAL: every term is a product of non-negative numbers, so the
+    result cannot be negative in IEEE-754, and it is exactly zero precisely when every
+    `bx` is equal.
+
+    The algebraically identical expanded form, `sum_w*sum_wbx2 - sum_wbx**2`, has
+    neither guarantee. It is a difference of two large nearly-equal quantities, so as
+    the exposure effects converge it collapses onto a cancellation remainder whose sign
+    is arbitrary -- and a negative one reaches `math.sqrt` as a domain error. That is
+    not visible through `mr_egger` once the conditioning check is in place, because the
+    check refuses those inputs anyway; it is visible here.
+    """
+    sum_w = np.sum(w)
+    xbar_w = np.sum(w * bx) / sum_w
+    return float(sum_w * np.sum(w * (bx - xbar_w) ** 2))
+
+
 def mr_egger(instruments: list[Instrument]) -> tuple[MREstimate, float, float, float]:
-    """MR-Egger regression. Returns (estimate, intercept, intercept_se, intercept_p)."""
+    """MR-Egger regression. Returns (estimate, intercept, intercept_se, intercept_p).
+
+    Two INDEPENDENT conditions have to hold, and neither implies the other:
+
+    STATISTICAL -- at least `MIN_EGGER_INSTRUMENTS`. Egger fits two parameters, so below
+    three there is no residual degree of freedom, no matter how clean the data is.
+
+    NUMERICAL -- at least two distinct `beta_exposure` values, checked as a dimensionless
+    ratio. The slope is unidentified when every `bx` coincides, and that is not an n < 3
+    problem: with a relative spread around 1e-10 the shipped code raised on roughly a
+    third of well-sized inputs at n = 5 and n = 10.
+
+    Below either, the estimator does not apply, and it says so instead of returning a
+    number. Returning one was the failure this replaces: at n = 1, over 5,000 draws on
+    each of two effect-size distributions, the old code returned a finite slope with a
+    median SE of 2.1e+07 in ~27% of cases, raised `math domain error` in ~27%, and hit
+    its own guard in ~46% -- a one-ulp sign coin flip rather than a property of the data.
+    """
     bx = np.array([i.beta_exposure for i in instruments])
     by = np.array([i.beta_outcome for i in instruments])
     sy = np.array([i.se_outcome for i in instruments])
@@ -138,22 +207,64 @@ def mr_egger(instruments: list[Instrument]) -> tuple[MREstimate, float, float, f
     w = 1.0 / (sy ** 2)
     n = len(instruments)
 
+    if n < MIN_EGGER_INSTRUMENTS:
+        return (
+            MREstimate.not_applicable(
+                "MR-Egger", n,
+                f"MR-Egger requires at least {MIN_EGGER_INSTRUMENTS} instruments "
+                f"(it fits a slope and an intercept); this analysis has {n}"),
+            float("nan"), float("nan"), float("nan"),
+        )
+
     sum_w = np.sum(w)
     sum_wbx = np.sum(w * bx)
     sum_wbx2 = np.sum(w * bx ** 2)
     sum_wby = np.sum(w * by)
-    sum_wbxby = np.sum(w * bx * by)
 
-    denom = sum_w * sum_wbx2 - sum_wbx ** 2
-    if abs(denom) < 1e-300:
-        return MREstimate("MR-Egger", 0, 1, -1.96, 1.96, 1.0, n), 0.0, 1.0, 1.0
+    # Centered (Lagrange) form: denom = sum_w * sum_i w_i (bx_i - xbar_w)^2, a sum of
+    # non-negative terms that is zero exactly when every bx is equal. The algebraically
+    # identical expanded form, sum_w*sum_wbx2 - sum_wbx**2, is a difference of two large
+    # nearly-equal quantities, so in floating point it lands on a cancellation remainder
+    # whose SIGN is arbitrary -- which is where the negative values under the square root
+    # came from. The NUMERATOR is centered for the same reason: centering the denominator
+    # alone fixes the sign and leaves the slope's accuracy degrading as the spread
+    # narrows.
+    xbar_w = sum_wbx / sum_w
+    ybar_w = sum_wby / sum_w
+    dx = bx - xbar_w
+    denom = egger_weighted_dispersion(w, bx)
+    numer = sum_w * np.sum(w * dx * (by - ybar_w))
 
-    slope = (sum_w * sum_wbxby - sum_wbx * sum_wby) / denom
-    intercept = (sum_wby - slope * sum_wbx) / sum_w
+    # Dimensionless conditioning test. `denom` carries the data's units: rescaling the
+    # outcome alone, which changes the slope but not the conditioning at all, moves it
+    # across hundreds of orders of magnitude, so no absolute threshold can be a criterion.
+    # This ratio is invariant to that rescaling.
+    scale = sum_w * sum_wbx2
+    rel = denom / scale if scale > 0 else 0.0
+    # Written as a negated `>` rather than `rel < threshold` so NaN also fails it. A
+    # comparison against NaN is False either way, and only this direction turns that
+    # into a refusal rather than into passing the check.
+    if not (rel > EGGER_MIN_RELATIVE_VARIANCE):
+        return (
+            MREstimate.not_applicable(
+                "MR-Egger", n,
+                "MR-Egger is not identified on these instruments: their exposure "
+                f"effects are too close to identical (relative variance {rel:.2e}, "
+                f"below {EGGER_MIN_RELATIVE_VARIANCE:.2e}), so the slope has no "
+                "informative standard error"),
+            float("nan"), float("nan"), float("nan"),
+        )
+
+    slope = numer / denom
+    intercept = ybar_w - slope * xbar_w
 
     fitted = intercept + slope * bx
     residuals = by - fitted
-    phi = max(1.0, np.sum(w * residuals ** 2) / (n - 2))
+    # df cannot be <= 0 here, since n >= MIN_EGGER_INSTRUMENTS above. Guarded anyway:
+    # this function is public and directly callable, and that is the difference between
+    # "unreachable from our pipeline" and "cannot happen".
+    df = n - 2
+    phi = 1.0 if df <= 0 else max(1.0, np.sum(w * residuals ** 2) / df)
 
     se_slope = math.sqrt(phi * sum_w / denom)
     se_intercept = math.sqrt(phi * sum_wbx2 / denom)
@@ -333,7 +444,9 @@ def scatter_plot(instruments: list[Instrument], estimates: list[MREstimate], pat
     x_range = np.linspace(min(bx) - 0.01, max(bx) + 0.01, 100)
     colours = {"IVW": "#d32f2f", "MR-Egger": "#ff9800", "Weighted Median": "#4caf50", "Weighted Mode": "#9c27b0"}
     for est in estimates:
-        if est.method in colours:
+        # A not-applicable estimator has no slope to draw; plotting NaN silently omits
+        # the line but still consumes a legend entry, which reads as "drawn at zero".
+        if est.method in colours and est.applicable:
             ax.plot(x_range, est.estimate * x_range, color=colours[est.method],
                     linewidth=1.5, label=f"{est.method} ({est.estimate:.3f})")
 
@@ -465,9 +578,16 @@ def generate_report(
 def _write_mr_table(estimates, path):
     with open(path, "w", newline="") as f:
         w = csv.writer(f, delimiter="\t")
-        w.writerow(["method", "estimate", "se", "ci_lower", "ci_upper", "pvalue", "n_snps"])
+        w.writerow(["method", "estimate", "se", "ci_lower", "ci_upper", "pvalue", "n_snps", "note"])
         for e in estimates:
-            w.writerow([e.method, f"{e.estimate:.6f}", f"{e.se:.6f}", f"{e.ci_lower:.6f}", f"{e.ci_upper:.6f}", f"{e.pvalue:.2e}", e.n_snps])
+            if not e.applicable:
+                # "not_applicable" in every numeric cell, never a formatted NaN: a
+                # spreadsheet renders `nan` in an estimate column as a value someone
+                # will try to read.
+                w.writerow([e.method, "not_applicable", "not_applicable", "not_applicable",
+                            "not_applicable", "not_applicable", e.n_snps, e.reason])
+                continue
+            w.writerow([e.method, f"{e.estimate:.6f}", f"{e.se:.6f}", f"{e.ci_lower:.6f}", f"{e.ci_upper:.6f}", f"{e.pvalue:.2e}", e.n_snps, ""])
 
 
 def _write_sensitivity_table(s, egger_int, egger_p, path):
@@ -475,7 +595,12 @@ def _write_sensitivity_table(s, egger_int, egger_p, path):
         w = csv.writer(f, delimiter="\t")
         w.writerow(["test", "statistic", "pvalue", "interpretation"])
         w.writerow(["Cochran_Q", f"{s.cochran_q:.2f}", f"{s.cochran_q_pvalue:.4f}", "Significant = heterogeneity" if s.cochran_q_pvalue < 0.05 else "No significant heterogeneity"])
-        w.writerow(["Egger_intercept", f"{egger_int:.6f}", f"{egger_p:.4f}", "Significant = directional pleiotropy" if egger_p < 0.05 else "No evidence of directional pleiotropy"])
+        if math.isnan(egger_int) or math.isnan(egger_p):
+            w.writerow(["Egger_intercept", "not_applicable", "not_applicable",
+                        "MR-Egger did not apply to this instrument set, so there is no "
+                        "directional-pleiotropy test"])
+        else:
+            w.writerow(["Egger_intercept", f"{egger_int:.6f}", f"{egger_p:.4f}", "Significant = directional pleiotropy" if egger_p < 0.05 else "No evidence of directional pleiotropy"])
         w.writerow(["Mean_F_statistic", f"{s.mean_f_statistic:.1f}", "N/A", f"{'WEAK' if s.mean_f_statistic < MIN_F_STAT else 'Strong'} instruments"])
         w.writerow(["Min_F_statistic", f"{s.min_f_statistic:.1f}", "N/A", f"{s.n_weak_instruments} weak instruments (F<{MIN_F_STAT})"])
         w.writerow(["I_squared_GX", f"{s.i_squared_gx:.4f}", "N/A", "SIMEX recommended" if s.i_squared_gx < 0.9 else "No SIMEX needed"])
@@ -512,7 +637,10 @@ def _write_report_md(instruments, estimates, sens, egger_int, egger_p, exposure,
         "| Test | Result | P-value | Interpretation |",
         "|------|--------|---------|----------------|",
         f"| Cochran's Q | {sens.cochran_q:.2f} (df={sens.cochran_q_df}) | {sens.cochran_q_pvalue:.4f} | {'Heterogeneity detected' if sens.cochran_q_pvalue < 0.05 else 'No significant heterogeneity'} |",
-        f"| Egger intercept | {egger_int:.4f} | {egger_p:.4f} | {'Directional pleiotropy' if egger_p < 0.05 else 'No directional pleiotropy'} |",
+        (f"| Egger intercept | {egger_int:.4f} | {egger_p:.4f} | "
+         f"{'Directional pleiotropy' if egger_p < 0.05 else 'No directional pleiotropy'} |"
+         if not (math.isnan(egger_int) or math.isnan(egger_p)) else
+         "| Egger intercept | not computed | not computed | MR-Egger did not apply |"),
         f"| Mean F-statistic | {sens.mean_f_statistic:.1f} | — | {'**WARNING: weak instruments**' if sens.mean_f_statistic < MIN_F_STAT else 'Strong instruments'} |",
         f"| Weak instruments (F<{MIN_F_STAT}) | {sens.n_weak_instruments}/{len(instruments)} | — | {'**WARNING**' if sens.n_weak_instruments > 0 else 'None'} |",
         f"| I²_GX | {sens.i_squared_gx:.4f} | — | {'SIMEX correction recommended' if sens.i_squared_gx < 0.9 else 'Adequate'} |",
@@ -529,11 +657,24 @@ def _write_report_md(instruments, estimates, sens, egger_int, egger_p, exposure,
         f"(beta = {estimates[0].estimate:.4f}, 95% CI [{estimates[0].ci_lower:.4f}, {estimates[0].ci_upper:.4f}], P = {estimates[0].pvalue:.2e}). ",
         "",
     ])
-    consistent = all(abs(e.estimate - estimates[0].estimate) < 2 * estimates[0].se for e in estimates[1:])
-    if consistent:
-        lines.append("Sensitivity analyses show consistent estimates across IVW, MR-Egger, weighted median, and weighted mode, supporting a robust causal inference.")
+    # Compare only estimators that PRODUCED an estimate, and name the ones that did not.
+    # A not-applicable row previously entered this comparison as a number, so a two-
+    # instrument run whose Egger SE was infinite still certified the result "robust".
+    comparable = [e for e in estimates[1:] if e.applicable]
+    skipped = [e for e in estimates if not e.applicable]
+    consistent = all(abs(e.estimate - estimates[0].estimate) < 2 * estimates[0].se
+                     for e in comparable)
+    if not comparable:
+        lines.append("No sensitivity estimator applies to this instrument set, so the "
+                     "IVW estimate stands alone and is not corroborated.")
+    elif consistent:
+        names = ", ".join(["IVW"] + [e.method for e in comparable])
+        lines.append(f"Sensitivity analyses show consistent estimates across {names}, "
+                     "supporting a robust causal inference.")
     else:
         lines.append("**Caution**: Estimates differ across methods, suggesting potential violations of MR assumptions. Interpret with care.")
+    for e in skipped:
+        lines.append(f"\n{e.method} was not computed: {e.reason}.")
     lines.extend(["", "---", "", f"*{DISCLAIMER}*", ""])
     (output_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -546,10 +687,21 @@ def _write_result_json(estimates, sens, egger_int, egger_p, exposure, outcome, o
         "mode": "demo" if demo else "live",
         "exposure": exposure,
         "outcome": outcome,
-        "estimates": [{"method": e.method, "estimate": round(e.estimate, 6), "se": round(e.se, 6), "pvalue": f"{e.pvalue:.2e}", "n_snps": e.n_snps} for e in estimates],
+        "estimates": [
+            {"method": e.method, "estimate": round(e.estimate, 6), "se": round(e.se, 6),
+             "pvalue": f"{e.pvalue:.2e}", "n_snps": e.n_snps}
+            if e.applicable else
+            {"method": e.method, "applicable": False, "reason": e.reason,
+             "n_snps": e.n_snps}
+            for e in estimates
+        ],
         "sensitivity": {
             "cochran_q": round(sens.cochran_q, 2), "cochran_q_p": round(sens.cochran_q_pvalue, 4),
-            "egger_intercept": round(egger_int, 6), "egger_intercept_p": round(egger_p, 4),
+            # None, not NaN: `allow_nan=False` below would otherwise refuse to write the
+            # file at all on exactly the runs this change exists to make well-behaved.
+            # JSON null is the honest encoding of "there is no such test here".
+            "egger_intercept": None if math.isnan(egger_int) else round(egger_int, 6),
+            "egger_intercept_p": None if math.isnan(egger_p) else round(egger_p, 4),
             "mean_f_stat": round(sens.mean_f_statistic, 1),
             "n_weak": sens.n_weak_instruments,
             "i_squared_gx": round(sens.i_squared_gx, 4),
@@ -557,7 +709,13 @@ def _write_result_json(estimates, sens, egger_int, egger_p, exposure, outcome, o
         },
         "disclaimer": DISCLAIMER,
     }
-    (output_dir / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    # allow_nan=False: Python emits `Infinity` and `NaN` bare by default, and RFC 8259
+    # has neither, so a strict parser rejects the WHOLE file rather than one field. A
+    # two-instrument run used to write `"se": Infinity` and exit 0. Now any non-finite
+    # anywhere in the document raises here instead of shipping unparseable JSON -- for
+    # every future one, not only this one.
+    (output_dir / "result.json").write_text(
+        json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
 
 
 def _write_repro(output_dir, ts, demo):

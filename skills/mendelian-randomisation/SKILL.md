@@ -153,7 +153,7 @@ Expected output: A full MR report for 30 synthetic BMI → T2D instruments showi
 ## Algorithm / Methodology
 
 1. **IVW**: beta = sum(w * bx * by) / sum(w * bx²), with multiplicative random-effects variance inflation (Burgess et al., 2013)
-2. **MR-Egger**: Weighted linear regression of by on bx with intercept; slope = causal estimate, intercept = pleiotropy (Bowden et al., 2015)
+2. **MR-Egger**: Weighted linear regression of by on bx with intercept; slope = causal estimate, intercept = pleiotropy (Bowden et al., 2015). Reported as **not applicable**, with a stated reason, when it is undefined on the given instruments: fewer than 3 of them (it fits two parameters, so below 3 there is no residual degree of freedom), or exposure effects too close to identical for the slope to be identified. Never a number in those cases.
 3. **Weighted Median**: Median of Wald ratios weighted by inverse-variance; consistent when ≥50% weight from valid instruments (Bowden et al., 2016)
 4. **Weighted Mode**: Kernel density mode of weighted Wald ratios (Hartwig et al., 2017)
 
@@ -162,6 +162,7 @@ Expected output: A full MR report for 30 synthetic BMI → T2D instruments showi
 - I²_GX > 0.9 for MR-Egger validity; SIMEX recommended below (Bowden et al., 2016)
 - Cochran's Q P < 0.05 indicates heterogeneity
 - Egger intercept P < 0.05 indicates directional pleiotropy
+- MR-Egger needs >= 3 instruments and at least two distinct exposure effects; below either it is not applicable rather than imprecise
 
 ## Example Output
 
@@ -255,7 +256,7 @@ The agent dispatches and explains. The skill (Python) executes. The agent must N
 
 **Chaining contract**:
 - **Input**: JSON with `instruments` array; each instrument has `SNP`, `beta_exposure`, `se_exposure`, `pval_exposure`, `beta_outcome`, `se_outcome`, `pval_outcome`, `effect_allele`, `other_allele`, `eaf`, `f_statistic`
-- **Output**: `result.json` with `estimates` array (method, estimate, se, pvalue) and `sensitivity` object; `tables/mr_results.tsv` for downstream consumption
+- **Output**: `result.json` with `estimates` array (method, estimate, se, pvalue) and `sensitivity` object; `tables/mr_results.tsv` for downstream consumption. An estimator that does not apply appears as `{"method", "applicable": false, "reason", "n_snps"}` with no numeric fields, and as `not_applicable` in every numeric column of the TSV plus a `note` column. `result.json` is written with `allow_nan=False`, so it is always valid JSON per RFC 8259 or it is not written at all.
 
 ## Maintenance
 
