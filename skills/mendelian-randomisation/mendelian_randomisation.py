@@ -78,10 +78,14 @@ class Instrument:
         return self.f_statistic < MIN_F_STAT
 
 
-# MR-Egger needs at least this many instruments to be defined: it fits a slope AND an
-# intercept, so at n < 3 there is no residual degree of freedom and no dispersion to
-# estimate, however well-conditioned the data is.
-MIN_EGGER_INSTRUMENTS = 3
+# The three sensitivity estimators need at least this many instruments. MR-Egger fits
+# a slope AND an intercept, so below 3 there is no residual degree of freedom; the
+# weighted median and weighted mode are order statistics of the per-SNP ratios, and
+# TwoSampleMR (Hemani et al. 2018, the reference implementation of all three) returns
+# NA for each of them below 3 SNPs. IVW is the one estimator defined at n=1, where it
+# reduces to the single Wald ratio.
+MIN_SENSITIVITY_INSTRUMENTS = 3
+MIN_EGGER_INSTRUMENTS = MIN_SENSITIVITY_INSTRUMENTS  # kept for callers that import it
 
 # Dimensionless conditioning floor for the Egger slope, replacing an absolute one.
 # rel = Var_w(bx) / E_w[bx^2] lies in [0, 1] and is invariant to the units of the data.
@@ -296,7 +300,17 @@ def mr_egger(instruments: list[Instrument]) -> tuple[MREstimate, float, float, f
 
 
 def weighted_median(instruments: list[Instrument], n_boot: int = 1000) -> MREstimate:
-    """Weighted median estimator (Bowden et al., 2016)."""
+    """Weighted median estimator (Bowden et al., 2016).
+
+    Not applicable below `MIN_SENSITIVITY_INSTRUMENTS`: the median of one or two ratios
+    is not a robust estimator of anything, and reporting it alongside IVW at n=1 let the
+    report certify a single Wald ratio as "consistent across methods".
+    """
+    if len(instruments) < MIN_SENSITIVITY_INSTRUMENTS:
+        return MREstimate.not_applicable(
+            "Weighted Median", len(instruments),
+            f"Weighted median requires at least {MIN_SENSITIVITY_INSTRUMENTS} instruments; "
+            f"this analysis has {len(instruments)}")
     bx = np.array([i.beta_exposure for i in instruments])
     by = np.array([i.beta_outcome for i in instruments])
     sy = np.array([i.se_outcome for i in instruments])
@@ -333,12 +347,29 @@ def weighted_median(instruments: list[Instrument], n_boot: int = 1000) -> MREsti
     )
 
 
+def _mad(x: np.ndarray) -> float:
+    """Median absolute deviation, scaled by 1.4826 for consistency with the SD under
+    normality (the constant R's `mad()` applies by default)."""
+    med = float(np.median(x))
+    return 1.4826 * float(np.median(np.abs(x - med)))
+
+
+def mbe_bandwidth(ratios: np.ndarray, phi: float) -> float:
+    """`h = phi * s`, with `s` the modified Silverman rule Hartwig et al. 2017 eq. 7 use:
+    `s = 0.9 * min(sd, 1.4826 * mad) / L^(1/5)`, floored at 1e-8 as in the reference
+    implementation so a set of identical ratios still has a width."""
+    sd = float(np.std(ratios, ddof=1)) if len(ratios) > 1 else 0.0
+    s = 0.9 * min(sd, _mad(ratios)) / len(ratios) ** 0.2
+    return max(1e-8, s * phi)
+
+
 def _weighted_mode_point(ratios: np.ndarray, weights: np.ndarray,
                          bandwidth: float) -> float:
-    """The mode of the weighted kernel density over the ratios."""
+    """The mode of the weighted normal-kernel density over the ratios (Hartwig et al.
+    2017 eq. 6), with `weights` already standardised to sum to 1."""
     span = float(np.max(ratios) - np.min(ratios))
-    pad = max(span, bandwidth) if span or bandwidth else 1.0
-    x_grid = np.linspace(float(np.min(ratios)) - pad, float(np.max(ratios)) + pad, 1000)
+    pad = max(span, 3.0 * bandwidth) if span or bandwidth else 1.0
+    x_grid = np.linspace(float(np.min(ratios)) - pad, float(np.max(ratios)) + pad, 2000)
     density = np.zeros_like(x_grid)
     for r, w in zip(ratios, weights):
         density += w * stats.norm.pdf(x_grid, loc=r, scale=bandwidth)
@@ -353,19 +384,28 @@ def weighted_mode(instruments: list[Instrument], phi: float = 1.0,
     (doi:10.1093/ije/dyx102; PMID 29040600), which specifies both a bandwidth
     proportional to the spread of the ratios and a bootstrapped standard error.
 
-    Two changes from a plain kernel mode, both of which the reference method specifies
-    and neither of which is cosmetic.
+    This follows the paper's weighted MBE and its reference implementation
+    (TwoSampleMR `mr_weighted_mode`, Hemani et al. 2018) term by term:
 
-    THE BANDWIDTH IS PROPORTIONAL TO THE SPREAD OF THE RATIOS, not an absolute constant.
-    It used to default to 0.5 whatever the data looked like. On instruments whose ratios
-    have a standard deviation of 0.28 -- an ordinary MR scale -- a bandwidth of 0.5 is
-    nearly twice the entire spread, so the kernels merge into one blob and the "mode"
-    slides onto the weighted mean: measured 0.5469 against an IVW estimate of 0.5281,
-    while the same data at a bandwidth of 0.1 gives 0.6679. An estimator whose whole
-    purpose is to disagree with the mean when most instruments agree with each other
-    cannot have a smoothing width that swamps the disagreement. `phi` now scales the
-    ratios' own standard deviation, so the estimator is invariant to the units of the
-    data in the way the mean and the median already were.
+    - ratio SEs by the delta method, `sqrt(sy^2/bx^2 + by^2*sx^2/bx^4)` (the
+      "not assuming NOME" column the reference uses for the weighted mode);
+    - standardised inverse-variance weights, eq. 5: `w_j = se_j^-2 / sum(se^-2)`;
+    - bandwidth `h = phi * s` with the modified Silverman rule, eq. 7:
+      `s = 0.9 * min(sd, 1.4826*mad) / L^(1/5)`, and the reference's `phi = 1`;
+    - standard error = 1.4826 x the median absolute deviation of a parametric
+      bootstrap of the ratios (each ratio redrawn from N(ratio, se_ratio)), the
+      bandwidth recomputed on every draw;
+    - p-value from a t distribution on L - 1 degrees of freedom, as the reference does.
+
+    Why this replaces what was here. THE BANDWIDTH WAS AN ABSOLUTE 0.5 whatever the data
+    looked like. On instruments whose ratios have a standard deviation of 0.28 -- an
+    ordinary MR scale -- 0.5 is nearly twice the entire spread, so the kernels merge into
+    one blob and the "mode" slides onto the weighted mean: measured 0.5469 against an
+    IVW estimate of 0.5281, while the same data at a bandwidth of 0.1 gives 0.6679. An
+    estimator whose whole purpose is to disagree with the mean when most instruments
+    agree with each other cannot have a smoothing width that swamps the disagreement.
+    A data-scaled bandwidth also makes the estimator invariant to the units of the data,
+    as the mean and the median already were.
 
     THE STANDARD ERROR IS A BOOTSTRAP. The previous `2 / sum(|bx_i|/sy_i)` is a function
     of the instrument count and the outcome standard errors and NOTHING ELSE -- it does
@@ -376,37 +416,41 @@ def weighted_mode(instruments: list[Instrument], phi: float = 1.0,
     estimate was least stable -- at the widest dispersion the mode itself moved from
     0.9673 to 0.3958 between two samples whose SEs were 0.0208 and 0.0043.
 
-    The bootstrap resamples each outcome effect from its own reported uncertainty and
-    re-derives the mode, so the SE reflects how much the mode actually moves.
+    The bootstrap redraws each ratio from its own reported uncertainty and re-derives
+    the mode, so the SE reflects how much the mode actually moves.
+
+    The weights were also `1/se`; the paper's eq. 5 and the reference implementation use
+    `1/se^2`. Corrected here, since the function now claims to be that estimator.
     """
+    n = len(instruments)
+    if n < MIN_SENSITIVITY_INSTRUMENTS:
+        return MREstimate.not_applicable(
+            "Weighted Mode", n,
+            f"Weighted mode requires at least {MIN_SENSITIVITY_INSTRUMENTS} instruments; "
+            f"this analysis has {n}")
     bx = np.array([i.beta_exposure for i in instruments])
     by = np.array([i.beta_outcome for i in instruments])
+    sx = np.array([i.se_exposure for i in instruments])
     sy = np.array([i.se_outcome for i in instruments])
 
     ratios = by / bx
-    se_ratios = sy / np.abs(bx)
-    weights = 1.0 / se_ratios
+    # Delta-method ratio SE, second order ("not assuming NOME"), as the reference uses
+    # for the weighted mode; the NOME variant drops the second term.
+    se_ratios = np.sqrt(sy ** 2 / bx ** 2 + by ** 2 * sx ** 2 / bx ** 4)
+    inv_var = 1.0 / se_ratios ** 2
+    weights = inv_var / np.sum(inv_var)
 
-    sd_ratios = float(np.std(ratios))
-    # A degenerate spread (every ratio identical) has no scale to take a fraction of;
-    # fall back to the ratios' own magnitude so the kernel still has a width.
-    bandwidth = phi * sd_ratios if sd_ratios > 0 else max(
-        float(np.mean(np.abs(ratios))) * 0.1, 1e-6)
-
-    beta_mode = _weighted_mode_point(ratios, weights, bandwidth)
+    beta_mode = _weighted_mode_point(ratios, weights, mbe_bandwidth(ratios, phi))
 
     rng = np.random.default_rng(seed)
     draws = np.empty(n_boot)
     for b in range(n_boot):
-        by_b = rng.normal(by, sy)
-        ratios_b = by_b / bx
-        sd_b = float(np.std(ratios_b))
-        bw_b = phi * sd_b if sd_b > 0 else bandwidth
-        draws[b] = _weighted_mode_point(ratios_b, weights, bw_b)
-    se_mode = float(np.std(draws, ddof=1))
+        ratios_b = rng.normal(ratios, se_ratios)
+        draws[b] = _weighted_mode_point(ratios_b, weights, mbe_bandwidth(ratios_b, phi))
+    se_mode = _mad(draws)
 
-    z = beta_mode / se_mode if se_mode > 0 else 0.0
-    pval = 2 * stats.norm.sf(abs(z))
+    t_stat = beta_mode / se_mode if se_mode > 0 else 0.0
+    pval = float(2 * stats.t.sf(abs(t_stat), df=n - 1))
 
     return MREstimate(
         method="Weighted Mode", estimate=beta_mode, se=se_mode,
@@ -450,14 +494,19 @@ def steiger_test(instruments: list[Instrument]) -> tuple[bool, float | None, str
     p astronomically small on BOTH sides, so it reported near-certainty in opposite
     directions depending on a unit choice.
 
-    `r2 = z^2 / (z^2 + n)` is the standard conversion for a continuous trait, and z is
-    invariant to the units of beta because the standard error carries the same units.
+    `r2 = z^2 / (z^2 + n - 2)` is the conversion for a continuous trait (the F statistic
+    of a one-predictor regression on n - 2 residual degrees of freedom; TwoSampleMR
+    `get_r_from_bsen`), and z is invariant to the units of beta because the standard
+    error carries the same units.
 
     Sample sizes are OPTIONAL, and what is reported depends on what is available:
 
     - both present: a variance explained per side, and a p-value from the Fisher
       z-transform difference of two INDEPENDENT correlations -- which is what two-sample
       MR has by construction, the exposure and outcome coming from different studies.
+      (The paper states the one-sample form, Steiger's Z for correlated correlations
+      within one population; its two-sample implementation, TwoSampleMR `mr_steiger`,
+      uses the independent-samples test, and so does this.)
     - absent: with equal sample sizes the comparison reduces to |z_exposure| >
       |z_outcome|, so the DIRECTION is still well defined and still unit-free. The
       p-value is not: it is returned as None with the assumption stated in `note`,
@@ -480,8 +529,8 @@ def steiger_test(instruments: list[Instrument]) -> tuple[bool, float | None, str
             "under the assumption that the exposure and outcome studies are of "
             "comparable size; no p-value is computed")
 
-    r2_exp = float(np.sum(z_exp ** 2 / (z_exp ** 2 + np.array(n_exp, dtype=float))))
-    r2_out = float(np.sum(z_out ** 2 / (z_out ** 2 + np.array(n_out, dtype=float))))
+    r2_exp = float(np.sum(z_exp ** 2 / (z_exp ** 2 + np.array(n_exp, dtype=float) - 2.0)))
+    r2_out = float(np.sum(z_out ** 2 / (z_out ** 2 + np.array(n_out, dtype=float) - 2.0)))
     correct = r2_exp > r2_out
 
     # Fisher z on each side, then the difference of two independent correlations.
@@ -489,7 +538,9 @@ def steiger_test(instruments: list[Instrument]) -> tuple[bool, float | None, str
     # instrument set can reach after summing.
     r_exp = min(math.sqrt(max(r2_exp, 0.0)), 1.0 - 1e-12)
     r_out = min(math.sqrt(max(r2_out, 0.0)), 1.0 - 1e-12)
-    n1, n2 = float(min(n_exp)), float(min(n_out))
+    # Per-instrument sample sizes are aggregated by their mean, as TwoSampleMR
+    # `mr_steiger` does (`n = mean(n_exp), n2 = mean(n_out)`).
+    n1, n2 = float(np.mean(n_exp)), float(np.mean(n_out))
     se = math.sqrt(1.0 / (n1 - 3.0) + 1.0 / (n2 - 3.0))
     z_stat = (math.atanh(r_exp) - math.atanh(r_out)) / se
     p = float(2 * stats.norm.sf(abs(z_stat)))

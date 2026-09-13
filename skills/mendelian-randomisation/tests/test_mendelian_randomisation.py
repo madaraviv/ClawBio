@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy import stats
 import pytest
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -380,16 +381,22 @@ def test_a_two_instrument_run_writes_parseable_json_and_a_report_that_says_why(t
     assert "estimate" not in egger and "se" not in egger
     assert result["sensitivity"]["egger_intercept"] is None
 
+    # Below three instruments none of the three sensitivity estimators applies (the
+    # weighted median and mode are order statistics of the ratios; TwoSampleMR returns
+    # NA for all three below 3 SNPs), so every one of them is declared, not numbered.
+    for method in ("Weighted Median", "Weighted Mode"):
+        row = next(e for e in result["estimates"] if e["method"] == method)
+        assert row["applicable"] is False and "estimate" not in row, row
+
     report = (out / "report.md").read_text()
     assert "MR-Egger was not computed" in report
-    # The POSITIVE assertion, not merely the absence of the old sentence: the robustness
-    # claim must NAME the estimators it actually compared. Asserting only that
-    # "consistent estimates across IVW, MR-Egger" is gone passes just as well when a
-    # non-applicable Egger is still fed into the comparison and drags it to "Caution" --
-    # right conclusion, wrong reason, and the next real disagreement would be invisible.
-    assert ("Sensitivity analyses show consistent estimates across IVW, "
-            "Weighted Median, Weighted Mode") in report
-    assert "MR-Egger, weighted median" not in report
+    # The POSITIVE assertion, not merely the absence of the old sentence. With nothing
+    # to compare against, the report must say the IVW stands alone -- not certify it as
+    # "consistent across methods" on the strength of estimators that never ran, which
+    # is what a two-instrument run used to do.
+    assert ("No sensitivity estimator applies to this instrument set, so the IVW "
+            "estimate stands alone and is not corroborated.") in report
+    assert "consistent estimates across" not in report
     assert "| Egger intercept | not computed |" in report
 
     table = (out / "tables" / "mr_results.tsv").read_text()
@@ -479,7 +486,10 @@ def test_a_zero_outcome_standard_error_is_refused_rather_than_passed_through():
         for k, se in enumerate([0.02, 0.0, 0.02])
     ]
 
-    est, intercept, _, _ = mr_egger(insts)
+    # The infinite weight is the point of the test; numpy's divide-by-zero and
+    # invalid-value warnings on the way to the NaN ratio are expected, not a defect.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        est, intercept, _, _ = mr_egger(insts)
 
     assert est.applicable is False
     assert "not identified" in est.reason
@@ -558,62 +568,91 @@ def _mode_input(spread, n=15, seed=3):
     return out
 
 
-def test_the_weighted_mode_se_can_tell_agreement_from_a_two_camp_split():
+def test_the_weighted_mode_se_reflects_the_ratios_and_the_closed_form_did_not():
     """The old SE was `2 / sum(|bx|/sy)` -- the instrument count and the outcome standard
     errors, and nothing about the ratios whose mode it reports.
 
     So it returns THE SAME NUMBER for instruments that all agree and for instruments
-    that split into two opposed clusters. Measured on 15 instruments with identical
-    exposure effects and outcome SEs: 0.01333 for one tight cluster around 0.50, and
-    0.01333 for an 8-versus-7 split between 0.20 and 0.80. The mode is a completely
-    different kind of claim in those two datasets and the reported precision was
-    unchanged. The bootstrap separates them, and is 2.4x to 3.9x wider throughout, so
-    the closed form was also over-confident.
+    that split into two opposed clusters: 0.01333 for both datasets below, whose ratios
+    are one tight cluster around 0.50 and an 8-versus-7 split between 0.20 and 0.80. The
+    parametric bootstrap of Hartwig et al. 2017 reacts to the ratios, and it is several
+    times wider than the closed form in both cases, so the closed form was also
+    over-confident.
+
+    What is NOT asserted is which of the two gets the wider SE. Measured with the
+    reference bandwidth rule over three seeds, the tight cluster came out at 0.057 to
+    0.063 and the split at 0.040 to 0.045: a two-camp split with a decisive majority pins
+    the mode on the larger camp, whose ratios nearly coincide, while the ratios of a
+    tight cluster scatter under resampling by more than their spread. An earlier version
+    of this test asserted the opposite ordering; it held only for a bandwidth rule the
+    reference method does not use, which is exactly the kind of invariant a test should
+    not carry.
+
+    The ratios carry a small jitter so no two coincide: exact ties make the median
+    absolute deviation zero, and the reference rule then floors the bandwidth at 1e-8,
+    which is the reference behaviour but not a realistic dataset.
     """
-    def _fixed(ratios):
-        return [Instrument(f"rs{k}", "A", "G", 0.3, 0.2, 0.025, 1e-10,
-                           0.2 * r, 0.02, 0.01, 64.0) for k, r in enumerate(ratios)]
+    rng = np.random.default_rng(2026)
 
-    tight = weighted_mode(_fixed([0.5] * 7 + [0.51, 0.49, 0.5, 0.52, 0.48, 0.5, 0.51, 0.49]),
-                          n_boot=300)
-    split = weighted_mode(_fixed([0.2] * 8 + [0.8] * 7), n_boot=300)
+    def _jittered(ratios):
+        out = []
+        for k, r in enumerate(ratios):
+            bx = float(rng.uniform(0.15, 0.25))
+            out.append(Instrument(f"rs{k}", "A", "G", 0.3, bx, bx / 8, 1e-10,
+                                  bx * r, 0.02, 0.01, 64.0))
+        return out
 
-    # same n, same outcome SEs, same exposure effects -- the OLD formula is blind here
+    tight = weighted_mode(_jittered(0.5 + rng.normal(0, 0.02, 15)), n_boot=300)
+    split = weighted_mode(_jittered(np.r_[0.2 + rng.normal(0, 0.02, 8),
+                                          0.8 + rng.normal(0, 0.02, 7)]), n_boot=300)
+
+    # the OLD formula, evaluated on the same inputs, is blind to the ratios entirely
     old_se = 1.0 / (sum(1.0 / (0.02 / 0.2) for _ in range(15)) * 0.5)
-    assert split.se > 1.4 * tight.se, (tight.se, split.se)
-    assert split.se > 2 * old_se and tight.se > 2 * old_se, (old_se, tight.se, split.se)
+    assert tight.se > 2 * old_se and split.se > 2 * old_se, (old_se, tight.se, split.se)
+    assert abs(tight.se - split.se) > 0.2 * min(tight.se, split.se), (tight.se, split.se)
+    assert tight.estimate == pytest.approx(0.5, abs=0.06)
+    assert split.estimate == pytest.approx(0.2, abs=0.03)     # the larger camp
 
 
 def test_the_weighted_mode_bandwidth_scales_with_the_data_not_a_constant():
     """A fixed 0.5 stops the mode being a mode.
 
-    Fifteen instruments split 9 to 6 between ratios of 0.20 and 0.80. The mode is 0.20,
-    by construction -- that is the larger camp, and separating it from the weighted mean
-    is the entire reason to run this estimator. The weighted mean is 0.4400.
+    Fifteen instruments split 9 to 6 between ratios near 0.20 and 0.80 (jittered so no
+    two coincide). The mode is 0.20, by construction -- that is the larger camp, and
+    separating it from the weighted mean is the entire reason to run this estimator.
+    The inverse-variance weighted mean here is 0.4463.
 
     With the old absolute bandwidth of 0.5, larger than the 0.6 gap between the camps,
-    the kernels merge and the "mode" comes out at 0.4090: the mean, to within rounding.
-    With a bandwidth proportional to the spread of the ratios it recovers 0.20 exactly at
-    phi = 0.3 and 0.5, and 0.2721 at the published default of phi = 1, which is ordinary
-    kernel over-smoothing rather than a collapse.
+    the kernels merge and the "mode" comes out at 0.3139, most of the way to the mean.
+    With the bandwidth rule of Hartwig et al. 2017 eq. 7 it recovers the larger camp at
+    phi = 0.3, 0.5 and at the reference default of 1 (0.1962 at each; the rule gives a
+    bandwidth of 0.0092 at phi = 1 on these ratios).
     """
-    from mendelian_randomisation import _weighted_mode_point
+    from mendelian_randomisation import _weighted_mode_point, mbe_bandwidth
 
-    insts = [Instrument(f"rs{k}", "A", "G", 0.3, 0.2, 0.025, 1e-10,
-                        0.2 * r, 0.02, 0.01, 64.0)
-             for k, r in enumerate([0.2] * 9 + [0.8] * 6)]
-    ratios = np.array([i.beta_outcome / i.beta_exposure for i in insts])
-    weights = np.array([1.0 / (i.se_outcome / abs(i.beta_exposure)) for i in insts])
+    rng = np.random.default_rng(7)
+    ratios_in = np.r_[0.2 + rng.normal(0, 0.01, 9), 0.8 + rng.normal(0, 0.01, 6)]
+    insts = []
+    rng2 = np.random.default_rng(3)
+    for k, r in enumerate(ratios_in):
+        bx = float(rng2.uniform(0.15, 0.25))
+        insts.append(Instrument(f"rs{k}", "A", "G", 0.3, bx, bx / 8, 1e-10,
+                                bx * r, 0.02, 0.01, 64.0))
+    bx = np.array([i.beta_exposure for i in insts]); by = np.array([i.beta_outcome for i in insts])
+    sx = np.array([i.se_exposure for i in insts]); sy = np.array([i.se_outcome for i in insts])
+    ratios = by / bx
+    se_r = np.sqrt(sy ** 2 / bx ** 2 + by ** 2 * sx ** 2 / bx ** 4)
+    weights = (1 / se_r ** 2) / np.sum(1 / se_r ** 2)
     mean = ivw(insts).estimate
 
     absolute = _weighted_mode_point(ratios, weights, 0.5)
-    proportional = _weighted_mode_point(ratios, weights, 0.5 * float(ratios.std()))
+    assert abs(absolute - mean) < 0.15, (absolute, mean)          # pulled onto the mean
+    for phi in (0.3, 0.5, 1.0):
+        proportional = _weighted_mode_point(ratios, weights, mbe_bandwidth(ratios, phi))
+        assert proportional == pytest.approx(0.20, abs=0.02), (phi, proportional)
+        assert abs(proportional - mean) > 0.2
 
-    assert abs(absolute - mean) < 0.05, (absolute, mean)      # collapsed onto the mean
-    assert proportional == pytest.approx(0.20, abs=0.02)      # found the larger camp
-    assert abs(proportional - mean) > 0.15
-
-    # and the shipped default is scale-free, which the absolute one was not
+    # and the shipped estimator is scale-free, which the absolute bandwidth was not
     scaled = [Instrument(i.snp, i.effect_allele, i.other_allele, i.eaf, i.beta_exposure,
                          i.se_exposure, i.pval_exposure, i.beta_outcome * 100,
                          i.se_outcome * 100, i.pval_outcome, i.f_statistic)
@@ -621,3 +660,108 @@ def test_the_weighted_mode_bandwidth_scales_with_the_data_not_a_constant():
     a = weighted_mode(insts, n_boot=100).estimate
     b = weighted_mode(scaled, n_boot=100).estimate / 100
     assert a == pytest.approx(b, rel=0.05), (a, b)
+
+
+# ---------------------------------------------------------------------------
+# Weighted mode and Steiger: the terms that tie the code to the cited methods.
+# Each of these pins ONE term a plausible re-implementation could silently change
+# without any of the behavioural tests above noticing.
+# ---------------------------------------------------------------------------
+
+def test_the_weighted_mode_weights_are_inverse_variance_not_inverse_se():
+    """Hartwig et al. 2017 eq. 5: `w_j = se_j^-2 / sum(se^-2)`.
+
+    Five imprecise instruments at a ratio of 0.20 (se 0.02) against one precise
+    instrument at 0.80 (se 0.005). Inverse-variance weights put 40000 on the precise
+    one against 5 x 2500 = 12500 on the camp, so the mode is 0.80. Inverse-SE weights,
+    which this function used to apply, give 200 against 5 x 50 = 250, and the mode
+    flips to 0.20. Same data, opposite answer; only the exponent differs.
+    """
+    from mendelian_randomisation import _weighted_mode_point
+
+    ratios = np.array([0.2, 0.201, 0.199, 0.2, 0.2005, 0.8])
+    se = np.array([0.02] * 5 + [0.005])
+    inv_var = 1.0 / se ** 2
+    weights = inv_var / inv_var.sum()
+    # a wide, fixed bandwidth so the answer is about the weights and nothing else
+    assert _weighted_mode_point(ratios, weights, 0.05) == pytest.approx(0.8, abs=0.02)
+
+    # and the shipped estimator reproduces that, so the weights it builds are these
+    insts = [Instrument(f"rs{k}", "A", "G", 0.3, 0.2, 1e-6, 1e-10, 0.2 * r, 0.2 * s_, 0.01, 64.0)
+             for k, (r, s_) in enumerate(zip(ratios, se))]
+    est = weighted_mode(insts, phi=6.0, n_boot=50)   # phi large enough to match the 0.05 above
+    assert est.estimate == pytest.approx(0.8, abs=0.03), est.estimate
+
+
+def test_the_weighted_mode_se_is_the_scaled_mad_of_the_bootstrap_and_p_is_from_t():
+    """The reference implementation reports `1.4826 * mad(draws)` and a t-test on L - 1
+    degrees of freedom (TwoSampleMR `mr_mode`: `se_Mode <- apply(beta_Mode.boot, 2,
+    stats::mad)`, `P_Mode <- pt(..., df = length(b_exp) - 1) * 2`)."""
+    from mendelian_randomisation import _mad
+
+    assert _mad(np.array([1.0, 2.0, 3.0, 4.0, 100.0])) == pytest.approx(1.4826 * 1.0)
+
+    # The SE goes THROUGH that helper. Pinned by substitution rather than by
+    # re-deriving the bootstrap here: swap `_mad` for a sentinel and the reported SE
+    # must be the sentinel's value. Without this, `np.std(draws)` in its place passed
+    # every other test in this file (mutation-checked 2026-09-12).
+    import mendelian_randomisation as mr_mod
+    real_mad = mr_mod._mad
+    mr_mod._mad = lambda draws: 0.123456
+    try:
+        assert weighted_mode(_mode_input(0.15, n=12), n_boot=20).se == pytest.approx(0.123456)
+    finally:
+        mr_mod._mad = real_mad
+
+    insts = _mode_input(0.15, n=12)
+    est = weighted_mode(insts, n_boot=200)
+    expected_p = 2 * stats.t.sf(abs(est.estimate / est.se), df=len(insts) - 1)
+    assert est.pvalue == pytest.approx(expected_p, rel=1e-9)
+    # not the normal approximation: at df = 11 the two differ by more than rounding
+    assert est.pvalue != pytest.approx(2 * stats.norm.sf(abs(est.estimate / est.se)), rel=1e-3)
+
+
+def test_steiger_p_value_follows_the_reference_conversion_and_aggregation():
+    """Pins the two terms that make this the TwoSampleMR Steiger test rather than a
+    near neighbour: `r2 = z^2 / (z^2 + n - 2)` per SNP (`get_r_from_bsen`) and the
+    per-SNP sample sizes aggregated by their MEAN (`mr_steiger`), then Fisher's z on
+    two independent correlations with `1/(n-3)` variances.
+
+    Small sample sizes on purpose: at n = 20 the `-2` moves r2 by 10% for z = 1, so a
+    drift to `z^2/(z^2+n)` is visible here and invisible at 100,000. Kept small enough
+    that the summed r2 on each side stays below 1 (the production code clamps at 1 for
+    atanh, and the expectation below would otherwise need the same clamp)."""
+    insts = [
+        Instrument("rs1", "A", "G", 0.3, 0.2, 0.2, 1e-10, 0.05, 0.1, 0.01, 64.0,
+                   n_exposure=20, n_outcome=40),
+        Instrument("rs2", "A", "G", 0.3, 0.3, 0.2, 1e-10, 0.05, 0.1, 0.01, 64.0,
+                   n_exposure=30, n_outcome=50),
+    ]
+    correct, p, note = steiger_test(insts)
+    assert correct is True and note == ""
+
+    z_exp = np.array([0.2 / 0.2, 0.3 / 0.2]); z_out = np.array([0.5, 0.5])
+    n_exp = np.array([20.0, 30.0]); n_out = np.array([40.0, 50.0])
+    r_exp = math.sqrt(float(np.sum(z_exp ** 2 / (z_exp ** 2 + n_exp - 2))))
+    r_out = math.sqrt(float(np.sum(z_out ** 2 / (z_out ** 2 + n_out - 2))))
+    se = math.sqrt(1 / (n_exp.mean() - 3) + 1 / (n_out.mean() - 3))
+    expected = 2 * stats.norm.sf(abs((math.atanh(r_exp) - math.atanh(r_out)) / se))
+    assert p == pytest.approx(expected, rel=1e-9)
+
+
+def test_the_weighted_mode_ratio_se_carries_the_exposure_uncertainty():
+    """The reference weighted mode uses the second-order delta-method ratio SE,
+    `sqrt(sy^2/bx^2 + by^2*sx^2/bx^4)` (TwoSampleMR `mr_mode`, the column "not assuming
+    NOME"). The first-order `sy/|bx|` ignores the exposure SE entirely.
+
+    Five precise instruments at a ratio of 0.20 against one at 0.80 whose outcome SE is
+    tiny but whose exposure SE is enormous. Second order: the exposure term makes its
+    ratio SE large, it is down-weighted, the mode is 0.20. First order: its ratio SE is
+    tiny, it dominates, the mode is 0.80.
+    """
+    camp = [Instrument(f"rs{k}", "A", "G", 0.3, 0.2, 0.01, 1e-10, 0.2 * r, 0.02, 0.01, 64.0)
+            for k, r in enumerate([0.2, 0.201, 0.199, 0.2, 0.2005])]
+    loud = Instrument("rs9", "A", "G", 0.3, 0.2, 0.5, 1e-10, 0.16, 0.0005, 0.01, 64.0)
+    est = weighted_mode(camp + [loud], phi=6.0, n_boot=50)
+    assert est.estimate == pytest.approx(0.2, abs=0.03), est.estimate
+
