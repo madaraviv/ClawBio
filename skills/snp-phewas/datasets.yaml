@@ -132,7 +132,8 @@ families:
 #
 # ancestry_group (default: ancestry) decides whether effect sizes are compared
 # (snp_phewas_catalog.cross_ancestry): FinnGen's Finnish participants are of European
-# genetic ancestry.
+# genetic ancestry. A dataset grouped under a broader group than its own ancestry must have
+# an entry in ancestry_group_caveats below (load_datasets fails loud otherwise).
 datasets:
   pan_ukbb_eur: {family: pan_ukbb, ancestry: EUR, label: "Pan-UK Biobank, European ancestry", short_label: "Pan-UKBB EUR", default: true, samples: ["UKB:EUR"]}
   pan_ukbb_afr: {family: pan_ukbb, ancestry: AFR, label: "Pan-UK Biobank, African ancestry", short_label: "Pan-UKBB AFR", samples: ["UKB:AFR"]}
@@ -146,6 +147,39 @@ datasets:
   mvp_amr: {family: mvp, ancestry: AMR, label: "Million Veteran Program, admixed American genetic ancestry", short_label: "MVP AMR", samples: ["MVP:AMR"]}
   mvp_eas: {family: mvp, ancestry: EAS, label: "Million Veteran Program, East Asian genetic ancestry", short_label: "MVP EAS", samples: ["MVP:EAS"]}
   mvp_meta: {family: mvp, ancestry: META, label: "Million Veteran Program, multi-population meta-analysis", short_label: "MVP meta", samples: ["MVP:EUR", "MVP:AFR", "MVP:AMR", "MVP:EAS"]}
+
+# Why a dataset is grouped under a broader ancestry_group than its own ancestry, said on
+# every pair compared on effect size that the dataset is in (snp_phewas_catalog
+# .within_group_caveats): `report` is the sentence pair the replication section and
+# result.json carry, `figure` the shorter line under the paired-effects panel's title,
+# `sources` the citations behind them. Not said on a cross-ancestry pair, where effect sizes
+# are not compared at all.
+ancestry_group_caveats:
+  finngen_r12:
+    report: >-
+      FinnGen's Finnish participants are grouped with the European datasets, but Finland is a
+      founder population: its bottleneck and genetic drift shifted allele frequencies relative
+      to other Europeans and shaped linkage disequilibrium across the Finnish genome (Kurki
+      2023; Jakkula 2008). A marker's effect size can therefore differ between the two datasets
+      even when the causal variant is shared, so read this pair's effect-size comparison as
+      looser than one within a single group.
+    figure: >-
+      FinnGen is a founder population: allele frequencies and linkage differ from other
+      Europeans, so this effect-size comparison is looser than one within a single group
+    sources:
+      - >-
+        Kurki MI, Karjalainen J, Palta P, et al. FinnGen provides genetic insights from a
+        well-phenotyped isolated population. Nature. 2023;613(7944):508-518.
+        doi:10.1038/s41586-022-05473-8. PMID: 36653562. (Drift in a bottlenecked population
+        raises some alleles well above their frequency in other Europeans: 62 of the 91
+        fine-mapped coding variants below 5% in non-Finnish Europeans are enriched more
+        than twofold in Finland.)
+      - >-
+        Jakkula E, Rehnström K, Varilo T, et al. The genome-wide patterns of variation expose
+        significant substructure in a founder population. Am J Hum Genet.
+        2008;83(6):787-794. doi:10.1016/j.ajhg.2008.11.005. PMID: 19061986. (Genetic
+        distances, homozygosity and linkage-disequilibrium patterns across Finnish
+        subpopulations carry the imprint of consecutive bottlenecks.)
 
 # The participant groups a dataset's `samples` may name, each with the plain-language name a
 # report uses when it says why two datasets are not compared.

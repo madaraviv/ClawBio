@@ -70,10 +70,23 @@ class DatasetSpec:
     #: The genetic-ancestry group effect sizes are compared within (`ancestry_group`, else
     #: `ancestry`): FinnGen's FIN is EUR.
     ancestry_group: str = ""
+    #: Set when `ancestry_group` is broader than `ancestry` (FinnGen's Finnish under EUR).
+    ancestry_group_caveat: GroupCaveat | None = None
 
     @property
     def outcome_catalog_path(self) -> str:
         return os.path.join(_SKILL_DIR, self.family_spec["outcome_catalog"])
+
+
+@dataclass(frozen=True)
+class GroupCaveat:
+    """Why a dataset sits under a broader `ancestry_group` than its own `ancestry`, said on
+    every pair compared on effect size that the dataset is in (`within_group_caveats`)."""
+
+    dataset_id: str
+    report: str  # the replication section's and result.json's sentences
+    figure: str  # the shorter line under the paired-effects panel title
+    sources: tuple[str, ...]  # the citations behind them
 
 
 @dataclass(frozen=True)
@@ -114,6 +127,7 @@ def load_datasets() -> dict[str, DatasetSpec]:
     raw = _load_yaml()
     out: dict[str, DatasetSpec] = {}
     groups = raw["sample_groups"]
+    caveats = dict(raw.get("ancestry_group_caveats") or {})
     for dsid, d in raw["datasets"].items():
         fam = raw["families"][d["family"]]
         samples = tuple(d.get("samples") or ())
@@ -121,6 +135,16 @@ def load_datasets() -> dict[str, DatasetSpec]:
         if not samples or any(a not in groups for a in samples):
             raise ValueError(f"datasets.yaml: {dsid} must list its `samples`, each one of "
                              f"`sample_groups`; got {list(samples)}")
+        group = str(d.get("ancestry_group") or d["ancestry"])
+        cav = caveats.pop(dsid, None)
+        # Fail loud both ways: grouping a population under a broader group is a judgment
+        # that must be explained, and an explanation on a dataset in its own group is stale.
+        if group != d["ancestry"] and cav is None:
+            raise ValueError(f"datasets.yaml: {dsid} is grouped under {group} but its "
+                             f"ancestry is {d['ancestry']}; add it to `ancestry_group_caveats`")
+        if group == d["ancestry"] and cav is not None:
+            raise ValueError(f"datasets.yaml: {dsid} has an `ancestry_group_caveats` entry "
+                             f"but sits in its own group {group}")
         out[dsid] = DatasetSpec(
             dataset_id=dsid,
             family=d["family"],
@@ -137,8 +161,16 @@ def load_datasets() -> dict[str, DatasetSpec]:
             family_spec=fam,
             short_label=str(d.get("short_label") or d["label"]),
             samples=samples,
-            ancestry_group=str(d.get("ancestry_group") or d["ancestry"]),
+            ancestry_group=group,
+            ancestry_group_caveat=(GroupCaveat(dsid, " ".join(str(cav["report"]).split()),
+                                               " ".join(str(cav["figure"]).split()),
+                                               tuple(" ".join(str(s).split())
+                                                     for s in cav["sources"]))
+                                   if cav is not None else None),
         )
+    if caveats:
+        raise ValueError(f"datasets.yaml: `ancestry_group_caveats` names datasets that do not "
+                         f"exist: {sorted(caveats)}")
     return out
 
 
@@ -218,6 +250,15 @@ def cross_ancestry(a: str, b: str) -> bool:
     either a multi-population meta-analysis (its pooled effect mixes groups)."""
     ga, gb = get_dataset(a).ancestry_group, get_dataset(b).ancestry_group
     return ga != gb or META in (ga, gb)
+
+
+def within_group_caveats(a: str, b: str) -> list[GroupCaveat]:
+    """The caveats a pair compared on effect size carries: those of its datasets grouped
+    under a broader ancestry group than their own (FinnGen's Finnish under EUR). Empty for a
+    cross-ancestry pair, whose effect sizes are not compared at all."""
+    if cross_ancestry(a, b):
+        return []
+    return [c for d in (a, b) if (c := get_dataset(d).ancestry_group_caveat) is not None]
 
 
 def label_in_list(dataset_id: str) -> str:

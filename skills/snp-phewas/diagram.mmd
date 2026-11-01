@@ -21,7 +21,7 @@ flowchart TD
     SAMP[("datasets.yaml: samples per dataset<br/>(participant groups), ancestry_group")] -.-> PAIRS
     H --> PAIRS{"pairs: declared groups intersect?"}
     PAIRS -->|yes: excluded pair, reason not_independent<br/>no verdicts, named in the report| OUT
-    PAIRS -->|no| V["replication verdict per compared pair<br/>p &lt; 0.05 / outcomes both share (readable files)<br/>different ancestry groups: sign and significance only"]
+    PAIRS -->|no| V["replication verdict per compared pair<br/>p &lt; 0.05 / outcomes both share (readable files)<br/>different ancestry groups: sign and significance only<br/>FinnGen's Finnish under EUR: founder-population caveat"]
     PAIRS -->|three datasets, none excluded| V3["three-way class with three datasets<br/>p &lt; 0.05 / outcomes all three share"]
     V --> OUT["report.md and stdout: every pair and all three<br/>result.json, tables/, reproducibility/<br/>no source answered: exit 3"]
     V3 --> OUT

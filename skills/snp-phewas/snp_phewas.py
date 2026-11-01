@@ -523,8 +523,11 @@ def run(args: argparse.Namespace, argv: list[str]) -> int:
     }
     if table is not None and (table.pairs or table.excluded_pairs):
         summary["replication"] = {
+            # `notes`: the cross-ancestry note or a within-group caveat (FinnGen's Finnish
+            # under EUR), the same sentences the report prints under the pair
             "pairs": [{"pair": list(pair), "n_shared": table.n_shared[pair],
-                       "alpha": table.alpha[pair], "verdicts": table.counts(pair)}
+                       "alpha": table.alpha[pair], "verdicts": table.counts(pair),
+                       "notes": table.pair_notes(pair)}
                       for pair in table.pairs],
             # pairs never compared, each with its reason (they share participants)
             "excluded_pairs": table.excluded_pair_records(),

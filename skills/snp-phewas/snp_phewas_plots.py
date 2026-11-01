@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import re
+import textwrap
 from functools import lru_cache
 from typing import Any
 
@@ -774,7 +775,8 @@ def paired_effects(table: ReplicationTable, out_png: str) -> str:
         pts = [r for r in pts_by[(a, b)] if r.cells[a].outcome_kind == kind]
         if not pts:  # say it rather than draw an empty grid
             ax.set_title(_paired_title(pts, a, b, kind,
-                                       cross=(a, b) in table.cross_ancestry_pairs),
+                                       cross=(a, b) in table.cross_ancestry_pairs,
+                                       caveats=_panel_caveats(table, a, b)),
                          fontsize=8.5, color=INK, loc="left")
             ax.text(0.5, 0.5, "no outcome of this kind was tested in both", ha="center",
                     va="center", fontsize=8, color=INK_2, transform=ax.transAxes)
@@ -808,7 +810,8 @@ def paired_effects(table: ReplicationTable, out_png: str) -> str:
         ax.set_xlabel(f"{_long_name(a)}: {unit}", fontsize=8, color=INK_2)
         ax.set_ylabel(f"{_long_name(b)}: {unit}", fontsize=8, color=INK_2)
         ax.set_title(_paired_title(pts, a, b, kind,
-                                   cross=(a, b) in table.cross_ancestry_pairs),
+                                   cross=(a, b) in table.cross_ancestry_pairs,
+                                   caveats=_panel_caveats(table, a, b)),
                      fontsize=8.5, color=INK, loc="left")
         if pts:
             ax.legend(fontsize=6.5, frameon=False, loc="upper left")
@@ -826,7 +829,21 @@ def paired_correlations(pts, a: str, b: str, kind: str) -> dict[str, Any]:
             "n_sig": len(sig), "r_sig": _corr(sig, a, b, kind) if len(sig) >= 3 else None}
 
 
-def _paired_title(pts, a, b, kind, *, cross: bool = False) -> str:
+def _panel_caveats(table: ReplicationTable, a: str, b: str) -> list[str]:
+    """The figure form of a within-group pair's caveats (FinnGen's Finnish under EUR)."""
+    return [c.figure for c in table.pair_caveats.get((a, b), [])]
+
+
+def _paired_title(pts, a, b, kind, *, cross: bool = False, caveats: list[str] = ()) -> str:
+    """The panel title: the pair and its n, then the correlations (or, across ancestry
+    groups, why none is given), then each within-group caveat wrapped to the panel."""
+    title = _paired_head(pts, a, b, kind, cross=cross)
+    for cav in caveats:
+        title += "\n" + textwrap.fill(cav, 82)
+    return title
+
+
+def _paired_head(pts, a, b, kind, *, cross: bool = False) -> str:
     c = paired_correlations(pts, a, b, kind)
     head = (f"{_short_name(a)} × {_short_name(b)}, "
             f"{'case/control' if kind == 'binary' else 'continuous'} outcomes tested in both: "

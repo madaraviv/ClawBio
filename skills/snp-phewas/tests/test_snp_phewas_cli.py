@@ -95,6 +95,12 @@ def test_demo_report_states_scope_sources_and_disclaimer(demo_out):
     assert res["summary"]["replication"]["n_harmonized"] == 1537   # the report's headline count
     assert res["summary"]["datasets"]["mvp_eur"]["n_read"] == 2
     assert res["data"]["uncataloged"] == ["K11_GINGIVITIS_PERIODONTAL"]
+    # the pairs with FinnGen carry the founder-population caveat the report prints
+    report = (demo_out / "report.md").read_text()
+    for k, p in pairs.items():
+        assert (p["notes"] != []) == ("finngen_r12" in k), k
+        for note in p["notes"]:
+            assert "founder population" in note and note in report
 
 
 def test_demo_report_names_every_pair_and_all_three(demo_out, capsys):

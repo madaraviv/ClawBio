@@ -382,6 +382,21 @@ participants count as European), or one with a multi-population meta-analysis, c
 causal variant differ); the verdict uses sign and significance only." The verdicts are
 unchanged; that pair's paired-effects panel gives no correlation.
 
+**Within-group caveat**: FinnGen's Finnish participants are grouped with the European
+datasets, so Pan-UK Biobank (European) by FinnGen is compared on effect size and gets a
+correlation. Finland is a founder population, and its bottleneck and genetic drift shifted
+allele frequencies relative to other Europeans (Kurki 2023: 62 of the 91 fine-mapped coding
+variants below 5% in non-Finnish Europeans are enriched more than twofold in Finland) and
+shaped linkage disequilibrium across the Finnish genome (Jakkula 2008), so a marker's effect
+size can differ between the two datasets even when the causal variant is shared. The pair
+therefore carries a two-sentence caveat in the replication section and `result.json`
+(`replication.pairs[].notes`) and a one-line form under its paired-effects panel title; the
+verdicts and the correlation are unchanged. The caveat is declared in `datasets.yaml`
+(`ancestry_group_caveats`, with its sources) beside the grouping it qualifies, and
+`load_datasets` fails loud when a dataset is grouped under a broader group than its own
+ancestry without one. A cross-ancestry pair (FinnGen by Pan-UK Biobank African, say) carries
+the cross-ancestry note instead, since its effect sizes are not compared at all.
+
 **Exit status**: when no source answered for any outcome (every read failed), the run is
 still written, `result.json` has status `error`, and the script exits 3. A null FinnGen API
 answer or a variant absent from a dataset is an answer and exits 0.
@@ -598,6 +613,11 @@ from such a table plugs into `lookup_variant(readers=...)`, and every downstream
   provides genetic insights from a well-phenotyped isolated population. Nature.
   2023;613(7944):508-518. doi:10.1038/s41586-022-05473-8. PMID: 36653562. We want to
   acknowledge the participants and investigators of the FinnGen study.
+- Jakkula E, Rehnström K, Varilo T, Pietiläinen OP, Paunio T, Pedersen NL, et al. The
+  genome-wide patterns of variation expose significant substructure in a founder population.
+  Am J Hum Genet. 2008;83(6):787-794. doi:10.1016/j.ajhg.2008.11.005. PMID: 19061986. (With
+  Kurki 2023, the basis of the Finnish founder-population caveat on the Pan-UK Biobank by
+  FinnGen pair)
 - Verma A, Huffman JE, Rodriguez A, Conery M, Liu M, Ho YL, et al. Diversity and scale:
   genetic architecture of 2068 traits in the VA Million Veteran Program. Science.
   2024;385(6706):eadj1182. doi:10.1126/science.adj1182. PMID: 39024449. Summary statistics

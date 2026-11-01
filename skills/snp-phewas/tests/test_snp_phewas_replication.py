@@ -30,7 +30,8 @@ from snp_phewas_replication import (
 ALPHA = 0.001
 #: Synthetic dataset ids ("a", "b", "c") are not in the catalog: these tables treat them as
 #: independent groups of one ancestry, so the catalog's sample and ancestry rules stay out.
-SYNTHETIC = {"overlap": lambda a, b: None, "ancestry_differs": lambda a, b: False}
+SYNTHETIC = {"overlap": lambda a, b: None, "ancestry_differs": lambda a, b: False,
+             "caveats_for": lambda a, b: []}
 
 
 def _cell(p=None, beta=None, status=S.ST_OK):
@@ -599,6 +600,69 @@ def test_a_cross_ancestry_pair_carries_the_note_and_keeps_its_verdicts(tmp_path)
     assert not _sig_everywhere(["pan_ukbb_eur", "finngen_r12", "mvp_eur"]).cross_ancestry_pairs
     # MVP's meta pools groups, so it is never compared on effect size with one group
     assert _sig_everywhere(["pan_ukbb_eur", "mvp_meta"]).cross_ancestry_pairs
+
+
+def test_the_finnish_founder_caveat_rides_the_within_group_pair_only(tmp_path):
+    """FinnGen's Finnish participants are grouped with the European datasets, so Pan-UKBB
+    EUR by FinnGen is compared on effect size; that pair says Finland is a founder population
+    (allele frequency and linkage shifted) in the text, result.json's notes and under the
+    panel title, keeps its correlation, and no other pair says it."""
+    import snp_phewas_plots as plots
+    from snp_phewas_catalog import get_dataset, within_group_caveats
+    from snp_phewas_replication import CROSS_ANCESTRY_NOTE, replication_lines
+
+    cav = get_dataset("finngen_r12").ancestry_group_caveat
+    assert cav is not None and "founder population" in cav.report and "Kurki 2023" in cav.report
+    assert len(cav.sources) == 2 and all("PMID" in s for s in cav.sources)
+    assert get_dataset("pan_ukbb_eur").ancestry_group_caveat is None
+    assert within_group_caveats("pan_ukbb_eur", "finngen_r12") == [cav]
+    assert within_group_caveats("finngen_r12", "mvp_eur") == [cav]
+    assert within_group_caveats("pan_ukbb_eur", "mvp_eur") == []
+    assert within_group_caveats("pan_ukbb_afr", "finngen_r12") == []   # cross-ancestry pair
+
+    t = _sig_everywhere(["pan_ukbb_eur", "finngen_r12", "mvp_eur"])
+    pair = ("pan_ukbb_eur", "finngen_r12")
+    assert set(t.pair_caveats) == {pair, ("finngen_r12", "mvp_eur")}
+    assert t.pair_notes(pair) == [cav.report]
+    assert t.pair_notes(("pan_ukbb_eur", "mvp_eur")) == []
+    text = "\n".join(replication_lines(t))
+    assert text.count(cav.report) == 2 and CROSS_ANCESTRY_NOTE not in text
+    # the panel keeps its correlation and adds the short form, wrapped
+    title = plots._paired_title(t.rows, *pair, "binary", caveats=plots._panel_caveats(t, *pair))
+    assert "r =" in title and cav.figure in " ".join(title.split())  # wrapped to the panel
+    assert title.count("\n") <= 3 and max(len(l) for l in title.split("\n")) <= 84
+    assert plots._panel_caveats(t, "pan_ukbb_eur", "mvp_eur") == []
+    plots.paired_effects(t, str(tmp_path / "p.png"))
+    # the caveat never changes a verdict or a count
+    bare = build_replication(type("R", (), {"dataset_ids": t.dataset_ids,
+                                            "rows": [c for r in t.rows for c in r.cells.values()]}),
+                             caveats_for=lambda a, b: [])
+    assert [r.verdicts for r in bare.rows] == [r.verdicts for r in t.rows] and not bare.pair_caveats
+    assert bare.n_shared == t.n_shared and bare.alpha == t.alpha
+    # a cross-ancestry pair with FinnGen carries the cross-ancestry note, not the caveat
+    x = _sig_everywhere(["pan_ukbb_afr", "finngen_r12"])
+    assert x.pair_notes(("pan_ukbb_afr", "finngen_r12")) == [CROSS_ANCESTRY_NOTE]
+    assert not x.pair_caveats
+
+
+def test_a_broader_ancestry_group_without_a_caveat_fails_loud(monkeypatch):
+    import snp_phewas_catalog as C
+
+    raw = C._load_yaml()
+    no_caveat = {**raw, "ancestry_group_caveats": {}}
+    monkeypatch.setattr(C, "_load_yaml", lambda: no_caveat)
+    with pytest.raises(ValueError, match="finngen_r12 is grouped under EUR"):
+        C.load_datasets()
+    stale = {**raw, "ancestry_group_caveats": {**raw["ancestry_group_caveats"],
+                                               "mvp_eur": raw["ancestry_group_caveats"]["finngen_r12"]}}
+    monkeypatch.setattr(C, "_load_yaml", lambda: stale)
+    with pytest.raises(ValueError, match="mvp_eur has an `ancestry_group_caveats` entry"):
+        C.load_datasets()
+    unknown = {**raw, "ancestry_group_caveats": {**raw["ancestry_group_caveats"],
+                                                 "nope": raw["ancestry_group_caveats"]["finngen_r12"]}}
+    monkeypatch.setattr(C, "_load_yaml", lambda: unknown)
+    with pytest.raises(ValueError, match="do not exist: \\['nope'\\]"):
+        C.load_datasets()
 
 
 def test_same_biobank_pairs_are_headed_so_with_all_datasets():

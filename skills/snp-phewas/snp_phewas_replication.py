@@ -38,7 +38,10 @@ When any of the three pairs shares participants there is no three-way summary
 (`three_way_withheld` carries the reason enum).
 
 An independent pair of different genetic-ancestry groups (`snp_phewas_catalog.cross_ancestry`)
-carries `CROSS_ANCESTRY_NOTE`; the note never changes a verdict, which reads sign and
+carries `CROSS_ANCESTRY_NOTE`; a pair compared within one group where a dataset is grouped
+under a broader group than its own (FinnGen's Finnish under EUR) carries that dataset's
+declared caveat (`snp_phewas_catalog.within_group_caveats`, `ReplicationTable.pair_notes`).
+Neither note changes a verdict, which reads sign and
 significance only.
 """
 
@@ -49,7 +52,7 @@ from itertools import combinations
 from typing import Any, Callable
 
 import snp_phewas_schema as S
-from snp_phewas_catalog import cross_ancestry, sample_overlap
+from snp_phewas_catalog import GroupCaveat, cross_ancestry, sample_overlap, within_group_caveats
 
 ALPHA = 0.05
 
@@ -230,6 +233,9 @@ class ReplicationTable:
     three_way_withheld: str | None = None
     #: Compared pairs of different genetic-ancestry groups (`CROSS_ANCESTRY_NOTE` applies).
     cross_ancestry_pairs: list[tuple[str, str]] = field(default_factory=list)
+    #: Compared pairs within one group -> the caveats of their datasets grouped under a
+    #: broader group than their own (`within_group_caveats`); absent pairs carry none.
+    pair_caveats: dict[tuple[str, str], list[GroupCaveat]] = field(default_factory=dict)
     #: Outcomes harmonized across at least two of the datasets, compared or not (`rows` holds
     #: only those some compared pair carries).
     n_harmonized: int = 0
@@ -238,6 +244,13 @@ class ReplicationTable:
     def pairs(self) -> list[tuple[str, str]]:
         """The pairs compared (never one in `excluded_pairs`)."""
         return list(self.n_shared)
+
+    def pair_notes(self, pair: tuple[str, str]) -> list[str]:
+        """What a compared pair's reader must know about its effect sizes, in plain
+        language: the cross-ancestry note, or the within-group caveats. The report and
+        result.json both read this one list."""
+        notes = [CROSS_ANCESTRY_NOTE] if pair in self.cross_ancestry_pairs else []
+        return notes + [c.report for c in self.pair_caveats.get(pair, [])]
 
     def excluded_pair_records(self) -> list[dict[str, str]]:
         """One record per pair not compared: the excluded pair is a row, with its reason."""
@@ -294,19 +307,24 @@ class PairClasses:
     excluded: dict[tuple[str, str], str]  # pair -> reason enum (`PAIR_EXCLUSION_LABELS`)
     sentences: dict[tuple[str, str], str]  # pair -> who the two datasets share
     cross_ancestry: list[tuple[str, str]]  # compared pairs `CROSS_ANCESTRY_NOTE` applies to
+    #: Within-group compared pairs -> their caveats (none for a pair of synthetic ids).
+    caveats: dict[tuple[str, str], list[GroupCaveat]] = field(default_factory=dict)
 
 
 def classify_pairs(ids: list[str], *,
                    overlap: Callable[[str, str], str | None] = sample_overlap,
-                   ancestry_differs: Callable[[str, str], bool] = cross_ancestry) -> PairClasses:
+                   ancestry_differs: Callable[[str, str], bool] = cross_ancestry,
+                   caveats_for: Callable[[str, str], list[GroupCaveat]] = within_group_caveats
+                   ) -> PairClasses:
     """The one place a pair is judged comparable. `check_pair_partition` asserts the built
     table keeps to it."""
     every_pair = list(combinations(ids, 2))
     sentences = {p: why for p in every_pair if (why := overlap(*p))}
     excluded = {p: EXCLUDED_NOT_INDEPENDENT for p in sentences}
     compared = [p for p in every_pair if p not in excluded]
-    return PairClasses(compared, excluded, sentences,
-                       [p for p in compared if ancestry_differs(*p)])
+    cross = [p for p in compared if ancestry_differs(*p)]
+    return PairClasses(compared, excluded, sentences, cross,
+                       {p: cs for p in compared if p not in cross and (cs := caveats_for(*p))})
 
 
 def check_pair_partition(table: ReplicationTable) -> None:
@@ -328,11 +346,13 @@ def check_pair_partition(table: ReplicationTable) -> None:
 def build_replication(result: Any, dataset_ids: list[str] | None = None, *,
                       overlap: Callable[[str, str], str | None] = sample_overlap,
                       ancestry_differs: Callable[[str, str], bool] = cross_ancestry,
+                      caveats_for: Callable[[str, str], list[GroupCaveat]] = within_group_caveats,
                       ) -> ReplicationTable:
     """Harmonized outcomes present in at least two of the datasets, with a verdict per pair.
 
-    `overlap` and `ancestry_differs` are the catalog's rules (`sample_overlap`,
-    `cross_ancestry`); only a test over synthetic dataset ids passes its own.
+    `overlap`, `ancestry_differs` and `caveats_for` are the catalog's rules (`sample_overlap`,
+    `cross_ancestry`, `within_group_caveats`); only a test over synthetic dataset ids passes
+    its own.
     """
     ids = dataset_ids or list(result.dataset_ids)
     reps: dict[str, dict[str, S.OutcomeRow]] = {}
@@ -341,7 +361,8 @@ def build_replication(result: Any, dataset_ids: list[str] | None = None, *,
         if r.dataset_id in ids and r.harmonized_outcome_id and r.harmonized_representative:
             reps.setdefault(r.harmonized_outcome_id, {})[r.dataset_id] = r
             labels.setdefault(r.harmonized_outcome_id, r.harmonized_label or r.outcome_label)
-    classes = classify_pairs(ids, overlap=overlap, ancestry_differs=ancestry_differs)
+    classes = classify_pairs(ids, overlap=overlap, ancestry_differs=ancestry_differs,
+                             caveats_for=caveats_for)
     pairs, excluded = classes.compared, classes.excluded
     # an outcome is in the table only when some COMPARED pair carries it: one shared only by a
     # pair that is not compared has nothing to report
@@ -384,7 +405,7 @@ def build_replication(result: Any, dataset_ids: list[str] | None = None, *,
                              excluded_pairs=excluded, excluded_pair_sentences=classes.sentences,
                              three_way_withheld=withheld,
                              cross_ancestry_pairs=classes.cross_ancestry,
-                             n_harmonized=n_harmonized)
+                             pair_caveats=classes.caveats, n_harmonized=n_harmonized)
     check_pair_partition(table)
     return table
 
@@ -437,8 +458,7 @@ def replication_lines(table: ReplicationTable, *, heading: str = "###") -> list[
             lines += ["", f"{head}: {n_shared:,} shared outcomes, threshold "
                           f"0.05 / {n_shared:,}." if n_shared else
                       f"{head}: no shared outcomes."]
-        if pair in table.cross_ancestry_pairs:
-            lines.append(CROSS_ANCESTRY_NOTE)
+        lines += table.pair_notes(pair)
         named: dict[str, list[str]] = {}
         for r in table.rows:
             named.setdefault(r.verdicts[pair], []).append(r.harmonized_label)

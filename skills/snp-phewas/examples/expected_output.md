@@ -2,7 +2,7 @@
 
 # Variant PheWAS across biobanks: rs12740374
 
-**Date**: 2026-10-30 17:37 UTC
+**Date**: 2026-11-01 19:08 UTC
 **Skill**: snp-phewas
 **Version**: 0.3.0
 **Variant (GRCh38)**: 1_109274968_G_T
@@ -74,6 +74,7 @@
 1,537 outcomes are harmonized across at least two of the datasets (the same ICD-10 block or phecode, FinnGen's own published match, or a reviewed match of the same lab measurement). An outcome replicates in a pair when both p-values are below 0.05 / n, n = the outcomes both datasets of the pair share, with the same direction.
 
 **Pan-UK Biobank (European ancestry) and FinnGen R12 (Finnish)**: 589 shared outcomes, threshold 0.05 / 589.
+FinnGen's Finnish participants are grouped with the European datasets, but Finland is a founder population: its bottleneck and genetic drift shifted allele frequencies relative to other Europeans and shaped linkage disequilibrium across the Finnish genome (Kurki 2023; Jakkula 2008). A marker's effect size can therefore differ between the two datasets even when the causal variant is shared, so read this pair's effect-size comparison as looser than one within a single group.
 - not read in one of the datasets (an outage, outside this lookup, or a study the source holds with no readable file; not a null): 587
 - replicates (significant in both, same direction): 2 (Ischemic Heart Disease, E78 Disorders of lipoprotein metabolism and other lipidaemias)
 587 harmonized outcomes could not be compared; they are listed apart from the nulls, never counted as nulls.
@@ -84,6 +85,7 @@
 1,179 harmonized outcomes could not be compared; they are listed apart from the nulls, never counted as nulls.
 
 **FinnGen R12 (Finnish) and Million Veteran Program (European genetic ancestry)**: 157 shared outcomes, threshold 0.05 / 157.
+FinnGen's Finnish participants are grouped with the European datasets, but Finland is a founder population: its bottleneck and genetic drift shifted allele frequencies relative to other Europeans and shaped linkage disequilibrium across the Finnish genome (Kurki 2023; Jakkula 2008). A marker's effect size can therefore differ between the two datasets even when the causal variant is shared, so read this pair's effect-size comparison as looser than one within a single group.
 - not read in one of the datasets (an outage, outside this lookup, or a study the source holds with no readable file; not a null): 232
 - replicates (significant in both, same direction): 1 (Ischemic Heart Disease)
 232 harmonized outcomes could not be compared; they are listed apart from the nulls, never counted as nulls.
@@ -129,7 +131,7 @@ This lookup read the European-ancestry datasets. Other ancestry groups can be re
 - Million Veteran Program, European genetic ancestry: release `mvp_gwphewas_gwascatalog_2026-10-19` (GRCh38); route tabix; 2 files read; 0 s.
   - Status of every catalog outcome: outcome was not part of this lookup: 1,219, the GWAS Catalog holds this study without a position index (or without summary statistics), so it cannot be read; not a null: 849, tested: 2.
 - Tabix indexes: 0 downloaded (0.0 MB), 0 already cached.
-- Wall time: 1.5 s.
+- Wall time: 1.4 s.
 
 ## Data sources
 
