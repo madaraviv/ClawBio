@@ -437,6 +437,24 @@ def test_finngen_api_p_of_zero_is_an_underflow_not_a_censored_value():
                                      "G", "T", "1_109274968_G_T").status == S.ST_API_CENSORED
 
 
+def test_finngen_api_maf_is_read_as_the_alt_allele_frequency_not_folded():
+    """The API's `maf` is the alt-allele frequency (snp_phewas_sources: 8,272 of 8,272 values
+    above 0.5 on 56 alt-major variants). A reader that folded it, or assumed it folded and
+    unfolded it, would report 1 - EAF for every alt-major variant."""
+    from snp_phewas_sources import FinnGenReader
+
+    # 1:109266488-G-A (rs593651): alt A is the major allele, file af_alt 0.751197
+    rec = FinnGenReader._api_record(dict(beta=-0.0257259, sebeta=0.0112, mlogp=1.79,
+                                         maf=0.751197, maf_case=0.746267,
+                                         maf_control=0.751484),
+                                    "G", "A", "1_109266488_G_A")
+    assert rec.status == S.ST_OK and rec.eaf == pytest.approx(0.751197)
+    assert rec.eaf > 0.5  # never folded to 0.248803
+    # a censored endpoint has no `maf` either (the API nulls them together), so no EAF
+    assert FinnGenReader._api_record(dict(beta=None, sebeta=None, mlogp=None, pval=None,
+                                          maf=None), "G", "A", "1_109266488_G_A").eaf is None
+
+
 def test_hybrid_route_fills_censored_endpoints_from_the_files(offline_kwargs):
     api = DemoFinnGenApi()
     api.payload["results"] = [dict(x, beta=None, sebeta=None, pval=None, mlogp=None)

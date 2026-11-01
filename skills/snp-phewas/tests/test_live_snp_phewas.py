@@ -43,6 +43,26 @@ def test_finngen_api_shape_golden_and_p_threshold():
     assert FinnGenPhewebClient().fetch_variant("1", 109274968, "G", "A") is None
 
 
+def test_finngen_api_maf_is_the_alt_allele_frequency_live():
+    """The decisive class for "folded or not" is a variant whose alt allele is the major
+    one: a folded minor-allele frequency can never exceed 0.5. rs593651 (1:109266488-G-A)
+    has alt A at 0.751 in FinnGen R12 (file af_alt; the API's own AC/AN agrees). If this
+    fails, the API started folding `maf` and FinnGenReader._api_record must unfold it."""
+    from snp_phewas_pheweb import FinnGenPhewebClient
+
+    payload = FinnGenPhewebClient().fetch_variant("1", 109266488, "G", "A")
+    assert payload is not None
+    annot = payload["variant"]["annotation"]["annot"]
+    alt_af = int(annot["AC"]) / int(annot["AN"])
+    assert alt_af > 0.7  # the premise: alt is the major allele here
+    mafs = [r["maf"] for r in payload["results"] if r.get("maf") is not None]
+    assert len(mafs) >= 100
+    assert all(m > 0.5 for m in mafs), (min(mafs), len(mafs))
+    assert all(abs(m - alt_af) < 0.01 for m in mafs), (min(mafs), max(mafs), alt_af)
+    # `maf` is censored together with beta: a result has both or neither
+    assert all((r.get("beta") is None) == (r.get("maf") is None) for r in payload["results"])
+
+
 def test_finngen_tabix_equals_api_live(cache):
     from snp_phewas_tabix import ensure_index, fetch_position, read_header
 

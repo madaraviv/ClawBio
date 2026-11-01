@@ -298,7 +298,12 @@ of their build, so allele ORDER decides orientation. Same order: kept. Swapped: 
 negated, EAF 1 - EAF, `allele_flip_applied`. Swapped and strand-ambiguous: direction
 withheld (`direction_withheld_reason`), p and SE kept. Other alleles: `allele_mismatch`.
 EAF is `af_<ancestry>` (Pan-UK Biobank continuous), the controls' `af_controls_<ancestry>`
-(Pan-UK Biobank case/control), `af_alt` (FinnGen) or `effect_allele_frequency` (MVP).
+(Pan-UK Biobank case/control), `af_alt` (FinnGen files) or `effect_allele_frequency` (MVP).
+The FinnGen API's `maf` is that same alt-allele frequency, not a folded minor-allele
+frequency: on 56 variants whose alt allele is the major one (file `af_alt` 0.55 to 0.99,
+drawn from eight chromosomes), all 8,272 non-null per-endpoint `maf` values were above 0.5,
+none of 2,489 on 16 alt-minor variants was, and where the API filled the same endpoint
+`maf` equaled the file's `af_alt` to the last digit (measured 2026-11-01).
 
 **Reading the GWAS Catalog harmonized files** (MVP): lines end in CRLF (stripped from the
 header and each record). The file is reference-anchored with ref = `other_allele`, alt =
@@ -575,7 +580,9 @@ from such a table plugs into `lookup_variant(readers=...)`, and every downstream
   mismatch); the GWAS Catalog harmonizing more MVP studies (refresh the snapshots with
   `snp_phewas_mvp_catalog.refresh_snapshot`, re-pin, rebuild with
   `snp_phewas_build_catalogs.py --families mvp`); the FinnGen API changing its reporting
-  threshold; Open Targets changing its variant id format.
+  threshold or the meaning of its `maf` field (the live test
+  `test_finngen_api_maf_is_the_alt_allele_frequency_live` fails if `maf` ever folds);
+  Open Targets changing its variant id format.
 - **On a release bump**: rebuild the outcome catalogs, the crosswalk, the demo slices and
   the golden test values together; the index cache is keyed by release, so old indexes are
   never reused.

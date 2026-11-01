@@ -549,9 +549,16 @@ class FinnGenReader:
         if beta is None or se is None or nlp is None:
             return RawRecord(S.ST_API_CENSORED, src_ref=src_ref, src_alt=src_alt,
                              variant_id_native=vid, route="api")
-        # The API's `maf` field is the files' `af_alt`, not a minor-allele frequency: equal on
-        # the 2 variants checked 2026-10-17, including 1:109266488-G-A where alt is the major
-        # allele (af_alt 0.751, API maf 0.751).
+        # The API's `maf` is the alt-allele frequency (the files' `af_alt`), not a folded
+        # minor-allele frequency, so it is the effect-allele frequency as is. Measured
+        # 2026-11-01 on 72 variants from one 16 kb tile of the R12 I9_CHD file on each of
+        # eight chromosomes (1, 2, 5, 7, 11, 16, 19, 22): on the 56 with file af_alt > 0.5,
+        # all 8,272 non-null per-endpoint `maf` values were above 0.5 (0.550 to 0.991; a
+        # folded frequency never is), on the 16 with af_alt < 0.5 none of 2,489 was, and on
+        # the 14 whose I9_CHD entry the API filled, `maf` equaled the file's `af_alt` and
+        # `maf_control` its `af_alt_controls` to the last printed digit. `maf` is null exactly
+        # where beta is (0 of 177,840 results had one without the other), so a censored
+        # endpoint carries no frequency either. test_live_snp_phewas pins the unfolded reading.
         return RawRecord(S.ST_OK, src_ref=src_ref, src_alt=src_alt, beta=beta, se=se,
                          neglog10_p=nlp, eaf=_f(res.get("maf")), variant_id_native=vid,
                          route="api", detail=detail,
