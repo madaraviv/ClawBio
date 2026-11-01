@@ -8,7 +8,7 @@ description: >-
   replication verdict per shared outcome for every biobank pair and across all three.
 license: MIT
 metadata:
-  version: "0.3.0"
+  version: "0.3.1"
   author: Aviv Madar
   domain: genomics
   tags:
