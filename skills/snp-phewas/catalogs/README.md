@@ -7,10 +7,12 @@ statistics.
 |---|---|---|---|
 | `pan_ukbb_outcomes.tsv.gz` | 7,223 | Pan-UK Biobank phenotype manifest, release 2024-06-26 (md5 `0735065d06ea8ffb098c119ef419c821`) | CC BY 4.0 |
 | `finngen_r12_outcomes.tsv.gz` | 2,469 | FinnGen R12 manifest (md5 `3034fcfbf61bb1ba33a0efb3a36ac482`) | FinnGen public results terms |
-| `mvp_outcomes.tsv.gz` | 7,537 | the Million Veteran Program studies of the NHGRI-EBI GWAS Catalog (PubMed 39024449), built offline from the three snapshots in `mvp_source/` (md5 pins in `datasets.yaml`) | GWAS Catalog terms of use; citation below |
+| `mvp_outcomes.tsv.gz` | 7,537 | the Million Veteran Program studies of the NHGRI-EBI GWAS Catalog (PubMed 39024449), built offline from the four snapshots in `mvp_source/` (md5 pins in `datasets.yaml`) | GWAS Catalog terms of use; citation below |
 | `mvp_source/gwas_catalog_studies_pmid39024449.jsonl.gz` | 7,537 | GWAS Catalog REST v2 study records, 2026-10-19 (the fields the catalog reads) | same |
-| `mvp_source/harmonised_list_mvp.txt.gz` | 4,442 | the MVP lines of the Catalog's `harmonised_list.txt` (last modified 2026-10-19 00:01:01 GMT) | same |
-| `mvp_source/harmonised_meta_mvp.tsv.gz` | 4,442 | each harmonized file's metadata (md5, date, genome assembly, sorted flag) | same |
+| `mvp_source/harmonisation_tracker_mvp.tsv.gz` | 6,019 | the MVP studies' rows of EBI's harmonization tracker `Harm_sumstats_status.db` (last run 2026-10-30) | same |
+| `mvp_source/harmonised_probe_mvp.tsv.gz` | 7,537 | a direct probe of each study's `harmonised/` directory, 2026-10-31 (data file, `.tbi`, range read of the first BGZF block) | same |
+| `mvp_source/harmonised_meta_mvp.tsv.gz` | 6,017 | each readable harmonized file's metadata (md5, date, genome assembly, sorted flag) | same |
+| `mvp_source/harmonised_list_mvp.txt.gz` | 4,442 | provenance only, read by nothing: the MVP lines of the Catalog's `harmonised_list.txt` (last modified 2026-10-19 00:01:01 GMT), which the 2026-10-19 catalog decided readability from | same |
 | `mvp_measurement_matches.tsv` | 76 | the reviewed match of each MVP lab / vital / survey measurement to a Pan-UK Biobank field (exact, near equivalent, or none) | derived |
 | `biobank_outcome_crosswalk.tsv.gz` | 17,229 | the Pan-UK Biobank and FinnGen manifests above, FinnGen's R12 phenotype-mapping files, the MVP catalog and the measurement table (md5s in `snp_phewas_crosswalk.SOURCES`), and the ICD-10 block structure | derived; FinnGen, Pan-UK Biobank and MVP acknowledgments below |
 
@@ -20,10 +22,13 @@ MVP catalog is rebuilt offline from the vendored snapshots with
 `python skills/snp-phewas/snp_phewas_build_catalogs.py --families mvp`; each snapshot is
 checked against its md5 pin, and the offline tests check the rebuild is byte-identical to the
 committed file. `snp_phewas_mvp_catalog.refresh_snapshot` re-fetches the snapshots (network)
-and returns their md5s for the pins. Of the 7,537 studies, 4,442 have a harmonized,
-position-indexed file; 1,580 are held only as an unsorted file the Catalog has not
-harmonized and 1,515 were deposited without summary statistics, so those 3,095 are listed
-and never read.
+and returns their md5s for the pins; it refuses a study that was readable turning
+unreadable unless named as confirmed gone. Readability is decided by `snp_phewas_readability`
+from the probe (which decides) and the tracker (which names the reason), never from the
+manifest. Of the 7,537 studies, 6,017 are readable by position on the 2026-10-31 probe; 1,515
+have no summary statistics deposited, 3 are held only as an unharmonized upload, 1 is queued
+for harmonization and 1 is recorded as harmonized with no file on the server, so those 1,520
+are listed and never read.
 
 ## Acknowledgments
 

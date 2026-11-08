@@ -8,16 +8,23 @@ mvp_tested:
 status_counts:
   pan_ukbb_eur: {ok: 3, not_queried: 7157}
   finngen_r12: {ok: 3, not_queried: 2466}
-  mvp_eur: {ok: 2, source_file_not_readable: 849, not_queried: 1219}
+  mvp_eur: {ok: 2, source_file_not_readable: 403, not_queried: 1665}
 # 2026-10-19 pan_ukbb_eur|mvp_eur 723 -> 724: C-reactive protein (biomarkers-30710) has two MVP
 # studies, GCST90476645 (no readable file, 26,528 cases) and GCST90476641 (readable, 20,588);
 # neither is read here, and the case-count tie-break made the unreadable one the
 # representative, which the threshold never counts. A readable study now outranks it.
+# Re-baselined 2026-10-31 (release mvp_gwphewas_gwascatalog_2026-10-31, the readability
+# probe), traced per diff: no tested value changed (both MVP slices were readable before and
+# after). mvp_eur moved 849 -> 403 not readable and 1,219 -> 1,665 not queried (446 EUR
+# studies became readable and, not being in the query, are not queried). n_shared moved
+# pan_ukbb_eur|mvp_eur 724 -> 977, finngen_r12|mvp_eur 157 -> 203 and n_shared_3 157 -> 203,
+# because an outcome counts as shared only when each side has a readable study; every
+# replication verdict and the three-way verdict are unchanged at the new thresholds.
 n_shared:
   pan_ukbb_eur|finngen_r12: 589
-  pan_ukbb_eur|mvp_eur: 724
-  finngen_r12|mvp_eur: 157
-n_shared_3: 157
+  pan_ukbb_eur|mvp_eur: 977
+  finngen_r12|mvp_eur: 203
+n_shared_3: 203
 # every verdict that is a comparison (not "not read" / "no counterpart")
 replication:
   "ICD10:E78": {pan_ukbb_eur|finngen_r12: replicates}

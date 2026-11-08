@@ -338,26 +338,30 @@ def lookup_variant(
     return result
 
 
-def not_readable_sentence(label: str, rows: list[S.OutcomeRow]) -> str:
-    """How many of a dataset's outcomes could not be read because the source holds no
-    position-indexed file, split by reason (counted from the rows, never recalled)."""
-    from snp_phewas_mvp_catalog import ACCESS_NO_SUMSTATS, ACCESS_RAW_ONLY
+def readability_checked_on(spec) -> str:
+    """The date the dataset's readability was last probed at the source, or ""."""
+    pin = (getattr(spec, "family_spec", None) or {}).get("release_pin") or {}
+    return str(pin.get("readability_checked") or "")
+
+
+def not_readable_sentence(label: str, rows: list[S.OutcomeRow], checked_on: str = "") -> str:
+    """How many of a dataset's outcomes could not be read by position, split by the real
+    reason each one carries (counted from the rows, never recalled), in plain words."""
+    from snp_phewas_mvp_catalog import ACCESS_STATUS_LABELS
 
     nr = [r for r in rows if r.status == S.ST_NOT_READABLE]
     by = Counter((r.status_detail or "").split(":", 1)[0] for r in nr)
     readable = sum(1 for r in rows if r.status != S.ST_NOT_READABLE)
-    parts = []
-    if by[ACCESS_RAW_ONLY]:
-        parts.append(f"{by[ACCESS_RAW_ONLY]:,} not harmonized by the GWAS Catalog")
-    if by[ACCESS_NO_SUMSTATS]:
-        parts.append(f"{by[ACCESS_NO_SUMSTATS]:,} deposited without summary statistics")
-    other = len(nr) - by[ACCESS_RAW_ONLY] - by[ACCESS_NO_SUMSTATS]
+    parts = [f"{ACCESS_STATUS_LABELS[code]}: {k:,}" for code, k in
+             sorted(by.items(), key=lambda kv: (-kv[1], kv[0])) if code in ACCESS_STATUS_LABELS]
+    other = sum(k for code, k in by.items() if code not in ACCESS_STATUS_LABELS)
     if other:
-        parts.append(f"{other:,} for another reason")
+        parts.append(f"another reason: {other:,}")
+    when = f"checked at the source on {checked_on}: " if checked_on else ""
     return (f"{label}: {readable:,} of {len(rows):,} outcomes are readable; the other "
-            f"{len(nr):,} cannot be read from the GWAS Catalog ({'; '.join(parts)}); they "
-            f"are listed, not counted as nulls, and are outside the significance threshold's "
-            f"denominator.")
+            f"{len(nr):,} cannot be read by position from the GWAS Catalog "
+            f"({when}{'; '.join(parts)}); they are listed, not counted as nulls, and are "
+            f"outside the significance threshold's denominator.")
 
 
 def _n(k: int, one: str, many: str) -> str:
@@ -391,7 +395,7 @@ def _dataset_notes(spec: DatasetSpec, rows: list[S.OutcomeRow], prov: dict, n_un
         out.append(f"{spec.label}: no direction shown for {_n(k, 'outcome', 'outcomes')}: "
                    + S.DIRECTION_WITHHELD_LABELS[reason].split(": ", 1)[1] + ".")
     if c[S.ST_NOT_READABLE]:
-        out.append(not_readable_sentence(spec.label, rows))
+        out.append(not_readable_sentence(spec.label, rows, readability_checked_on(spec)))
     if prov.get("autosomes_only"):
         out.append(f"{spec.label}: released autosomal results only, so this variant is "
                    f"absent from every one of its outcomes.")

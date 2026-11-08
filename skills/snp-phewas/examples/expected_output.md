@@ -2,7 +2,7 @@
 
 # Variant PheWAS across biobanks: rs12740374
 
-**Date**: 2026-11-01 19:08 UTC
+**Date**: 2026-11-08 22:58 UTC
 **Skill**: snp-phewas
 **Version**: 0.3.0
 **Variant (GRCh38)**: 1_109274968_G_T
@@ -19,11 +19,11 @@
 
 - **Pan-UK Biobank, European ancestry**: tested in 3 of 3 outcomes read (7,160 in the catalog); 3 below the threshold 0.05 / 3 (over the 3 outcomes looked up).
 - **FinnGen R12 (Finnish)**: tested in 3 of 3 outcomes read (2,469 in the catalog); 3 below the threshold 0.05 / 3 (over the 3 outcomes looked up).
-- **Million Veteran Program, European genetic ancestry**: tested in 2 of 2 outcomes read (2,070 in the catalog, 849 of them with no readable file); 2 below the threshold 0.05 / 2 (over the 2 outcomes looked up).
+- **Million Veteran Program, European genetic ancestry**: tested in 2 of 2 outcomes read (2,070 in the catalog, 403 of them with no readable file); 2 below the threshold 0.05 / 2 (over the 2 outcomes looked up).
 - **Replication, Pan-UK Biobank (European ancestry) and FinnGen R12 (Finnish)** (threshold 0.05 / 589 shared outcomes): 2 replicate, 0 same direction significant in one only, 0 opposite directions, 0 null in both.
-- **Replication, Pan-UK Biobank (European ancestry) and Million Veteran Program (European genetic ancestry)** (threshold 0.05 / 724 shared outcomes): 2 replicate, 0 same direction significant in one only, 0 opposite directions, 0 null in both.
-- **Replication, FinnGen R12 (Finnish) and Million Veteran Program (European genetic ancestry)** (threshold 0.05 / 157 shared outcomes): 1 replicate, 0 same direction significant in one only, 0 opposite directions, 0 null in both.
-- **Replication, all three** (threshold 0.05 / 157 outcomes all three share): 1 replicate in all three, 0 in two.
+- **Replication, Pan-UK Biobank (European ancestry) and Million Veteran Program (European genetic ancestry)** (threshold 0.05 / 977 shared outcomes): 2 replicate, 0 same direction significant in one only, 0 opposite directions, 0 null in both.
+- **Replication, FinnGen R12 (Finnish) and Million Veteran Program (European genetic ancestry)** (threshold 0.05 / 203 shared outcomes): 1 replicate, 0 same direction significant in one only, 0 opposite directions, 0 null in both.
+- **Replication, all three** (threshold 0.05 / 203 outcomes all three share): 1 replicate in all three, 0 in two.
 
 ## Notes
 
@@ -39,8 +39,8 @@
 - FinnGen R12 (Finnish): only 3 of 2,469 outcomes were requested; the rest are listed as not part of this lookup.
 - FinnGen R12 (Finnish): the source also returned 1 outcome(s) its published catalog does not list; they are kept separately, not in the counts above.
 - Million Veteran Program, European genetic ancestry: tested in 2 of 2,070 outcomes.
-- Million Veteran Program, European genetic ancestry: 2,068 outcomes have no value; the most common reason (1,219) is: outcome was not part of this lookup.
-- Million Veteran Program, European genetic ancestry: 1,221 of 2,070 outcomes are readable; the other 849 cannot be read from the GWAS Catalog (448 not harmonized by the GWAS Catalog; 401 deposited without summary statistics); they are listed, not counted as nulls, and are outside the significance threshold's denominator.
+- Million Veteran Program, European genetic ancestry: 2,068 outcomes have no value; the most common reason (1,665) is: outcome was not part of this lookup.
+- Million Veteran Program, European genetic ancestry: 1,667 of 2,070 outcomes are readable; the other 403 cannot be read by position from the GWAS Catalog (checked at the source on 2026-10-31: no summary statistics deposited at the GWAS Catalog: 401; queued for harmonization by the GWAS Catalog, no file yet: 1; held by the GWAS Catalog only as an unharmonized upload, which cannot be read by position: 1); they are listed, not counted as nulls, and are outside the significance threshold's denominator.
 - Million Veteran Program, European genetic ancestry: read from 2 files in 0 s.
 - Million Veteran Program, European genetic ancestry: only 2 of 2,070 outcomes were requested; the rest are listed as not part of this lookup.
 - BioBank Japan (NBDC hum0197) is not included: its terms limit use to research and development purposes.
@@ -79,12 +79,12 @@ FinnGen's Finnish participants are grouped with the European datasets, but Finla
 - replicates (significant in both, same direction): 2 (Ischemic Heart Disease, E78 Disorders of lipoprotein metabolism and other lipidaemias)
 587 harmonized outcomes could not be compared; they are listed apart from the nulls, never counted as nulls.
 
-**Pan-UK Biobank (European ancestry) and Million Veteran Program (European genetic ancestry)**: 724 shared outcomes, threshold 0.05 / 724.
+**Pan-UK Biobank (European ancestry) and Million Veteran Program (European genetic ancestry)**: 977 shared outcomes, threshold 0.05 / 977.
 - not read in one of the datasets (an outage, outside this lookup, or a study the source holds with no readable file; not a null): 1,179
 - replicates (significant in both, same direction): 2 (LDL direct, Ischemic Heart Disease)
 1,179 harmonized outcomes could not be compared; they are listed apart from the nulls, never counted as nulls.
 
-**FinnGen R12 (Finnish) and Million Veteran Program (European genetic ancestry)**: 157 shared outcomes, threshold 0.05 / 157.
+**FinnGen R12 (Finnish) and Million Veteran Program (European genetic ancestry)**: 203 shared outcomes, threshold 0.05 / 203.
 FinnGen's Finnish participants are grouped with the European datasets, but Finland is a founder population: its bottleneck and genetic drift shifted allele frequencies relative to other Europeans and shaped linkage disequilibrium across the Finnish genome (Kurki 2023; Jakkula 2008). A marker's effect size can therefore differ between the two datasets even when the causal variant is shared, so read this pair's effect-size comparison as looser than one within a single group.
 - not read in one of the datasets (an outage, outside this lookup, or a study the source holds with no readable file; not a null): 232
 - replicates (significant in both, same direction): 1 (Ischemic Heart Disease)
@@ -92,7 +92,7 @@ FinnGen's Finnish participants are grouped with the European datasets, but Finla
 
 Different biobanks are treated as independent: they recruit different people (UK Biobank, FinnGen and the Million Veteran Program), which is a matter of study design, not something this lookup measures.
 
-**All three biobanks** (Pan-UKBB EUR, FinnGen and MVP EUR): 157 outcomes with a readable file are shared by all three; each is compared at 0.05 / 157.
+**All three biobanks** (Pan-UKBB EUR, FinnGen and MVP EUR): 203 outcomes with a readable file are shared by all three; each is compared at 0.05 / 203.
 - not read in one of the three (an outage, outside this lookup, or a study the source holds with no readable file; not a null): 232
 - replicates in all three (significant in each, same direction): 1 (Ischemic Heart Disease)
 
@@ -128,10 +128,10 @@ This lookup read the European-ancestry datasets. Other ancestry groups can be re
   - Status of every catalog outcome: outcome was not part of this lookup: 7,157, tested: 3.
 - FinnGen R12 (Finnish): release `finngen_r12` (GRCh38); route api+tabix; 0 files read; 1 API request(s); 0 s.
   - Status of every catalog outcome: outcome was not part of this lookup: 2,466, tested: 3.
-- Million Veteran Program, European genetic ancestry: release `mvp_gwphewas_gwascatalog_2026-10-19` (GRCh38); route tabix; 2 files read; 0 s.
-  - Status of every catalog outcome: outcome was not part of this lookup: 1,219, the GWAS Catalog holds this study without a position index (or without summary statistics), so it cannot be read; not a null: 849, tested: 2.
+- Million Veteran Program, European genetic ancestry: release `mvp_gwphewas_gwascatalog_2026-10-31` (GRCh38); route tabix; 2 files read; 0 s.
+  - Status of every catalog outcome: outcome was not part of this lookup: 1,665, the GWAS Catalog holds this study without a position index (or without summary statistics), so it cannot be read; not a null: 403, tested: 2.
 - Tabix indexes: 0 downloaded (0.0 MB), 0 already cached.
-- Wall time: 1.4 s.
+- Wall time: 1.5 s.
 
 ## Data sources
 

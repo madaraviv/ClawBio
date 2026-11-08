@@ -74,7 +74,7 @@ SOURCES = {
     # snp_phewas_build_catalogs.py from its own pinned snapshots), and the reviewed MVP
     # lab / vital -> Pan-UKBB field table, one row per MVP measurement (76), matched or not.
     # The crosswalk build reads the table's data rows and skips its `#` comment lines.
-    "mvp_outcome_catalog": ("catalogs/mvp_outcomes.tsv.gz", "e9f131d6461b87e79a3d857f7caad568"),
+    "mvp_outcome_catalog": ("catalogs/mvp_outcomes.tsv.gz", "0b7813bda3f5cd7a5c949065b8048826"),
     "mvp_measurement_matches": ("catalogs/mvp_measurement_matches.tsv",
                                 "c328ed9398bb1ec65978ae40162ddb44"),
 }

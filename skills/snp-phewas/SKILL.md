@@ -122,7 +122,9 @@ put them on one effect allele and one outcome key, and say which associations re
   studies on one join key and a verdict per shared outcome for every pair of biobanks and
   across all three. The default three-biobank read took 159 s and 613 s in two runs with an
   empty index cache, and 57 s and 66 s with the indexes cached (measured 2026-10-19 on a Mac
-  mini, 16 workers per biobank; the cold spread is the GWAS Catalog's download speed).
+  mini, 16 workers per biobank, over the 2026-10-19 MVP catalog; the cold spread is the GWAS
+  Catalog's download speed). The 2026-10-31 MVP catalog reads more MVP files (below), and
+  these times have not been re-measured on it.
 - **Why ClawBio**: values are read from the biobanks' own files; nothing is estimated. The
   skill `gwas-lookup` calls the same FinnGen web endpoint for its FinnGen leg. This skill
   differs in five ways: it reads Pan-UK Biobank and the Million Veteran Program (not in
@@ -210,11 +212,11 @@ biobanks and nothing else. It does not fine-map, colocalize, run MR, or search l
 ## CLI Reference
 
 ```bash
-# Default: the outcomes matched across the three biobanks (1,156 Pan-UKBB + 622 FinnGen + 727 MVP)
-# (first run downloads 4.53 GB of index files into the cache, summed from Content-Length)
+# Default: the outcomes matched across the three biobanks (1,363 Pan-UKBB + 622 FinnGen + 981 MVP)
+# (first run downloads at least 4.53 GB of index files into the cache; see Cost and cache)
 python skills/snp-phewas/snp_phewas.py --variant rs12740374 --output /tmp/snp_phewas
 
-# Every outcome in every biobank (7,160 + 2,469 + the 1,221 readable MVP studies; 20.0 GB of indexes)
+# Every outcome in every biobank (7,160 + 2,469 + the 1,667 readable MVP studies; at least 20.0 GB of indexes)
 python skills/snp-phewas/snp_phewas.py --variant rs12740374 --all-outcomes --output /tmp/x
 
 # One ancestry group in every biobank that has it (AFR, AMR, CSA, EAS, EUR, MID, META)
@@ -270,17 +272,26 @@ acknowledgments in `demo/README.md`).
 | `pan_ukbb_eur` (default) | 7,160 | GRCh37 | per-outcome tabix files on AWS Open Data |
 | `pan_ukbb_afr` / `_amr` / `_csa` / `_eas` / `_mid` | 2,445 / 982 / 2,739 / 1,533 / 1,248 | GRCh37 | same files |
 | `finngen_r12` (default) | 2,469 | GRCh38 | PheWeb variant API + per-endpoint tabix files |
-| `mvp_eur` (default) | 2,070 (1,221 readable) | GRCh38, autosomes | the GWAS Catalog's harmonized per-study tabix files |
+| `mvp_eur` (default) | 2,070 (1,667 readable) | GRCh38, autosomes | the GWAS Catalog's harmonized per-study tabix files |
 | `mvp_afr` / `_amr` / `_eas` / `_meta` | 1,757 / 1,479 / 500 / 1,731 | same | same |
 
 Pan-UK Biobank counts are the 2024-06-26 manifest, FinnGen's the R12 manifest (md5 pinned).
 **Million Veteran Program** (Verma A et al. Science 2024;385:eadj1182) is served by the GWAS
 Catalog as one study per (trait, population): 7,537 studies on the 2026-10-19 snapshot. The
 catalog (`snp_phewas_mvp_catalog.py`, `catalogs/mvp_outcomes.tsv.gz`) is built offline from
-three md5-pinned snapshots in `catalogs/mvp_source/` and lists EVERY study with its access
-status: 4,442 harmonized (sorted, indexed, readable), 1,580 held only as an unsorted file
-the Catalog has not harmonized, 1,515 deposited without summary statistics. A study with no
-readable file is a row with status `source_file_not_readable`, never read and never a null.
+four md5-pinned snapshots in `catalogs/mvp_source/` (the study list, EBI's harmonization
+tracker rows, a direct probe of each study's harmonized directory, each readable file's
+metadata) and lists EVERY study with its access status. Readability comes from the rule in
+`snp_phewas_readability.py`: the probe decides (a data file, its `.tbi`, and a range read
+that returns a BGZF block), the tracker names the reason when it is not readable, and the
+Catalog's `harmonised_list.txt` manifest decides nothing (the 2026-10-19 catalog was built
+from it and called 1,580 studies unharmonized; 1,575 of them were range-readable on
+2026-10-31). Probed 2026-10-31: 6,017 readable by position, 1,515 with no summary
+statistics deposited, 3 held only as an unharmonized upload, 1 queued for harmonization, 1
+recorded as harmonized with no file on the server. A study with no readable file is a row
+with status `source_file_not_readable` and its reason, never read and never a null. A
+refresh refuses a study that was readable turning unreadable unless it is named as
+confirmed gone (an outage that answers 404 looks exactly like that).
 BioBank Japan is listed as not included, with the reason.
 
 **Status** (every catalog outcome is exactly one row): `ok`, `low_confidence` (tested;
@@ -405,7 +416,7 @@ answer or a variant absent from a dataset is an answer and exits 0.
 counterpart in another biobank of the same lookup, the ones the replication view compares,
 one rule for all three (never more of one because its data is quicker to get: FinnGen's
 one API request returns every endpoint, and the ones outside the set are not kept). With
-the default three that is 1,156 Pan-UK Biobank, 622 FinnGen and 727 MVP outcomes; with
+the default three that is 1,363 Pan-UK Biobank, 622 FinnGen and 981 MVP outcomes; with
 Pan-UK Biobank and FinnGen alone, 589 and 622. The others are `not_queried` rows, and the
 report states this first, per biobank, counted from the rows. `--all-outcomes` reads every
 outcome in every biobank. A lookup of one biobank alone reads its whole catalog.
@@ -418,9 +429,11 @@ its report with the other groups and an example command.
 **Cost and cache**: each outcome file needs its tabix index, downloaded once into
 `--index-cache` (default `~/.clawbio/snp_phewas/index`, or `SNP_PHEWAS_INDEX_CACHE`), keyed
 by release. Index sizes, summed from the sources' Content-Length (2026-10-18 for Pan-UK
-Biobank and FinnGen in full, 2026-10-19 for the rest): 4.53 GB for the default matched
-files (2.15 GB Pan-UK Biobank, 1.10 GB FinnGen, 1.27 GB MVP), 20.0 GB for `--all-outcomes`
-(13.54 + 4.37 + 2.12 GB). The CLI says what it will read and download on stderr before it
+Biobank and FinnGen in full, 2026-10-19 for the rest) over the 2026-10-19 MVP catalog:
+4.53 GB for the default matched files then (1,156 + 622 + 727 files: 2.15 GB Pan-UK
+Biobank, 1.10 GB FinnGen, 1.27 GB MVP), 20.0 GB for `--all-outcomes` (13.54 + 4.37 +
+2.12 GB, 1,221 MVP files). The 2026-10-31 catalog reads a superset of those files (1,363 +
+622 + 981 matched, 1,667 MVP in full), so these are lower bounds until re-measured. The CLI says what it will read and download on stderr before it
 starts. The `--all-outcomes` wall time is not measured.
 
 ## Example Queries
@@ -438,18 +451,18 @@ From `--demo` (abridged; the full file is `examples/expected_output.md`):
 ```markdown
 ## Summary
 - **Million Veteran Program, European genetic ancestry**: tested in 2 of 2 outcomes read
-  (2,070 in the catalog, 849 of them with no readable file); 2 below the threshold 0.05 / 2
+  (2,070 in the catalog, 403 of them with no readable file); 2 below the threshold 0.05 / 2
   (over the 2 outcomes looked up).
-- **Replication, all three** (threshold 0.05 / 157 outcomes all three share): 1 replicate
+- **Replication, all three** (threshold 0.05 / 203 outcomes all three share): 1 replicate
   in all three, 0 in two.
 
 ## Replication across biobanks
 **Pan-UK Biobank (European ancestry) and Million Veteran Program (European genetic ancestry)**:
-724 shared outcomes, threshold 0.05 / 724.
+977 shared outcomes, threshold 0.05 / 977.
 - replicates (significant in both, same direction): 2 (LDL direct, Ischemic Heart Disease)
 
-**All three biobanks** (Pan-UKBB EUR, FinnGen and MVP EUR): 157 outcomes with a readable
-file are shared by all three; each is compared at 0.05 / 157.
+**All three biobanks** (Pan-UKBB EUR, FinnGen and MVP EUR): 203 outcomes with a readable
+file are shared by all three; each is compared at 0.05 / 203.
 - replicates in all three (significant in each, same direction): 1 (Ischemic Heart Disease)
 ```
 
@@ -460,7 +473,8 @@ GiB (2.08 GB) of indexes downloaded. Every one of the 589 + 622 outcomes was tes
 Replication over the 589 shared outcomes (threshold 0.05 / 589): 4 replicate (E78
 lipoprotein disorders, ischemic heart disease, angina pectoris, abdominal aortic aneurysm),
 5 are same-direction significant in one only, 580 are null in both. Live, the default three
-biobanks (measured 2026-10-19 on a Mac mini, 16 workers each), rs12740374 with an empty
+biobanks (measured 2026-10-19 on a Mac mini, 16 workers each, over the 2026-10-19 MVP
+catalog), rs12740374 with an empty
 index cache: 159 s in one run and 613 s in another, the second with the MVP leg at 605 s
 (Pan-UK Biobank 92 s, FinnGen 50 s), so the first-run time is mostly the GWAS Catalog's
 download speed; rs2228145 with the indexes cached: 66 s (57 s in an earlier warm run). Read
@@ -512,13 +526,13 @@ writes neither.
   `source_file_missing`, `record_unparsable`, `not_queried` and `source_file_not_readable`
   are reads that failed or did not happen; the replication view calls them "not read",
   never "both null".
-- **You will want to count an MVP study the GWAS Catalog has not harmonized. Do not.** 849
-  of the 2,070 European-ancestry studies have no readable file on the 2026-10-19 snapshot;
-  they are rows with their reason and sit outside every significance denominator.
+- **You will want to count an MVP study with no readable file. Do not.** 403 of the 2,070
+  European-ancestry studies have no file readable by position on the 2026-10-31 probe; they
+  are rows with their reason and sit outside every significance denominator.
 - **You will want to read an MVP odds ratio's SE from its interval. Do not.** The interval
   is rounded; the SE that reproduces the file's own p is used (see Methodology).
 - **You will want to say "no association" for an outcome outside the default scope. Do
-  not.** Without `--all-outcomes`, 6,004 Pan-UK Biobank, 1,847 FinnGen and 494 readable MVP
+  not.** Without `--all-outcomes`, 5,797 Pan-UK Biobank, 1,847 FinnGen and 686 readable MVP
   outcomes are not read; say so and offer the full run.
 - **You will want to report the first pair alone. Do not.** With three biobanks there are
   three pairs and an all-three class; the report and stdout print them all.
@@ -593,7 +607,8 @@ from such a table plugs into `lookup_variant(readers=...)`, and every downstream
 - **Staleness signals**: FinnGen R13 (released June 2, 2026; this skill reads R12); a changed
   manifest md5 (the catalog rebuild script `snp_phewas_build_catalogs.py` fails loudly on a
   mismatch); the GWAS Catalog harmonizing more MVP studies (refresh the snapshots with
-  `snp_phewas_mvp_catalog.refresh_snapshot`, re-pin, rebuild with
+  `snp_phewas_mvp_catalog.refresh_snapshot` from a downloaded copy of EBI's harmonization
+  tracker, re-pin, rebuild with
   `snp_phewas_build_catalogs.py --families mvp`); the FinnGen API changing its reporting
   threshold or the meaning of its `maf` field (the live test
   `test_finngen_api_maf_is_the_alt_allele_frequency_live` fails if `maf` ever folds);

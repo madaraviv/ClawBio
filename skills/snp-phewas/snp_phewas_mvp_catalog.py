@@ -13,21 +13,27 @@ record carries no MVP trait id, so everything here is read from the record itsel
     Catalog's multi-population meta-analyses.
   * `initial_sample_size` -> cases and controls (binary) or individuals (quantitative).
 
-Which studies can be read by position is not in the record: only the studies the Catalog
-has HARMONIZED have a sorted, bgzipped, tabix-indexed file (`harmonised_list.txt`). Every
-other study is still a catalog row, with `access_status` saying why it cannot be read
-(`raw_only_unindexed`: the Catalog hosts an unsorted plain-gzip file only;
-`no_summary_statistics`: nothing deposited). A lookup returns those as
-`source_file_not_readable` rows, never as absences.
+Which studies can be read by position is not in the record either. It is decided by the
+readability rule in `snp_phewas_readability`: a DIRECT PROBE of the study's `harmonised/`
+directory (a data file, its `.tbi`, and a range read that returns a BGZF block) says whether
+it is readable, and EBI's harmonization tracker (`Harm_sumstats_status.db`) says why when it
+is not. Membership in `harmonised_list.txt` decides nothing: the 2026-10-19 build read that
+manifest and called 1,580 studies "not harmonized", and 1,575 of them were range-readable on
+2026-10-31 with files dated 2025-05 to 2025-07. Every unreadable study is still a catalog row, its `access_status` the
+readability reason code (`tracker_harmonised_file_missing`, `untracked_no_deposit`, ...),
+and a lookup returns it as a `source_file_not_readable` row with that reason, never as an
+absence.
 
 Two halves, so the committed catalog is reproducible offline:
 
-  `refresh_snapshot(out_dir)`  (network, run by hand) fetches the three source snapshots
-                               into `catalogs/mvp_source/`: the study records (REST v2), the MVP
-                               lines of `harmonised_list.txt`, and each harmonized file's
-                               metadata (`<acc>.h.tsv.gz-meta.yaml`: md5, date, assembly).
-  `build_rows(...)`            (offline) turns the pinned snapshots into catalog rows, with
-                               the write-time assertions.
+  `refresh_snapshot(out_dir, tracker_db=...)`  (network, run by hand) writes the source
+        snapshots into `catalogs/mvp_source/`: the study records (REST v2; the pinned snapshot is
+        kept unless `fetch_studies=True`), the tracker rows for those studies, the raw
+        readability probes, and each readable file's metadata (`-meta.yaml`: md5, date,
+        assembly).
+  `build_rows(...)`  (offline) classifies every study with the readability rule from the pinned
+        tracker rows and probes and turns the result into catalog rows, with the write-time
+        assertions (readable + not readable == the study list, as SETS).
 """
 
 from __future__ import annotations
@@ -37,18 +43,21 @@ import gzip
 import hashlib
 import io
 import json
+import os
 import re
 from collections import Counter
 from typing import Any, Iterable
 
+import snp_phewas_readability as RD
 from snp_phewas_crosswalk import normalize_phecode, quant_key  # noqa: F401
 
 PUBMED_ID = 39024449
 STUDIES_URL = ("https://www.ebi.ac.uk/gwas/rest/api/v2/studies?pubmed_id=39024449"
                "&page={page}&size=200")
-HARMONISED_LIST_URL = ("https://ftp.ebi.ac.uk/pub/databases/gwas/summary_statistics/"
-                       "harmonised_list.txt")
 DATA_BASE_URL = "https://ftp.ebi.ac.uk/pub/databases/gwas/summary_statistics/"
+#: The committed catalog a refresh is compared against (readable must stay readable).
+PRIOR_CATALOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalogs",
+                                  "mvp_outcomes.tsv.gz")
 
 # The fields of a REST v2 study record the snapshot keeps (the rest is presentation).
 STUDY_FIELDS = ("accession_id", "disease_trait", "initial_sample_size", "discovery_ancestry",
@@ -58,15 +67,16 @@ STUDY_FIELDS = ("accession_id", "disease_trait", "initial_sample_size", "discove
 META_COLUMNS = ("accession", "data_file_name", "data_file_md5sum", "date_metadata_last_modified",
                 "genome_assembly", "is_sorted", "is_harmonised", "file_type")
 
+#: The readable status keeps its historical code (`harmonised`): every reader keys on it.
 ACCESS_HARMONISED = "harmonised"
-ACCESS_RAW_ONLY = "raw_only_unindexed"
-ACCESS_NO_SUMSTATS = "no_summary_statistics"
-ACCESS_STATUSES = (ACCESS_HARMONISED, ACCESS_RAW_ONLY, ACCESS_NO_SUMSTATS)
+#: An unreadable study's `access_status` is the readability reason code. An
+#: undetermined (`transport`) study is never written: the build refuses instead.
+ACCESS_UNREADABLE: tuple[str, ...] = tuple(
+    r.code for r in RD.Reason if r.verdict in (RD.Verdict.CANNOT_EVER, RD.Verdict.NOT_YET))
+ACCESS_STATUSES = (ACCESS_HARMONISED, *ACCESS_UNREADABLE)
 ACCESS_STATUS_LABELS = {
     ACCESS_HARMONISED: "harmonized by the GWAS Catalog (sorted, position-indexed file)",
-    ACCESS_RAW_ONLY: ("the GWAS Catalog holds this study without a position index (it has "
-                      "not harmonized it), so it cannot be read by position"),
-    ACCESS_NO_SUMSTATS: "deposited without summary statistics",
+    **{code: RD.REASON_LABELS[code] for code in ACCESS_UNREADABLE},
 }
 
 KIND_PHECODE = "phecode"
@@ -191,19 +201,14 @@ def read_studies(jsonl_gz: bytes) -> list[dict[str, Any]]:
             if line.strip()]
 
 
-def read_harmonised_paths(subset_gz: bytes) -> dict[str, str]:
-    """{accession: relative path of the harmonized file} from the MVP lines of the list."""
-    out: dict[str, str] = {}
-    for line in gzip.decompress(subset_gz).decode("utf-8").splitlines():
-        p = line.strip()
-        if not p:
-            continue
-        p = p[2:] if p.startswith("./") else p
-        acc = p.split("/")[1]
-        if acc in out:
-            raise MvpCatalogError(f"{acc} listed twice in harmonised_list.txt")
-        out[acc] = p
-    return out
+def read_tracker_rows(tsv_gz: bytes) -> dict[str, Any]:
+    """The pinned harmonization-tracker rows (`Harm_sumstats_status.db`, MVP studies only)."""
+    return RD.read_tracker_rows_tsv(gzip.decompress(tsv_gz).decode("utf-8"))
+
+
+def read_probes(tsv_gz: bytes) -> dict[str, Any]:
+    """The pinned readability probes of each study's `harmonised/` directory."""
+    return RD.read_probes_tsv(gzip.decompress(tsv_gz).decode("utf-8"))
 
 
 def read_meta(meta_gz: bytes) -> dict[str, dict[str, str]]:
@@ -211,23 +216,43 @@ def read_meta(meta_gz: bytes) -> dict[str, dict[str, str]]:
     return {r["accession"]: r for r in rows}
 
 
-def build_rows(studies: list[dict[str, Any]], harmonised: dict[str, str],
+def classify_studies(studies: list[dict[str, Any]], tracker: dict[str, Any],
+                     probes: dict[str, Any]) -> "RD.ReadabilityBatch":
+    """The readability rule over the study list. Refuses an undetermined (transport)
+    study and an id the rule cannot key on: neither may become a catalog row."""
+    accs = [s["accession_id"] for s in studies]
+    if len(set(accs)) != len(accs) or not all(accs):
+        raise MvpCatalogError("the study list repeats or omits an accession")
+    stray = set(tracker) - set(accs)
+    if stray:
+        raise MvpCatalogError(f"tracker rows for studies not in the list: {sorted(stray)[:5]}")
+    try:
+        batch = RD.classify_batch(accs, tracker=tracker, probes=probes)
+        batch.require_determined()
+    except (RD.UndeterminedStudies, RD.ReadabilityError) as exc:
+        raise MvpCatalogError(str(exc)) from exc
+    return batch
+
+
+def build_rows(studies: list[dict[str, Any]], tracker: dict[str, Any], probes: dict[str, Any],
                meta: dict[str, dict[str, str]]) -> list[dict[str, str]]:
     """One catalog row per study, with the write-time assertions:
 
     * `outcome_id` (the GCST accession) unique and non-null on every row, and the rows equal
-      the study list as SETS;
-    * `filename`, `filename_tabix` and `md5_hex` set exactly when `access_status` is
-      harmonised, and the harmonized file is GRCh38 (else the build refuses rather than
-      read it at the wrong position);
-    * every harmonized path names a study in the list (a stray line fails loudly).
+      the study list as SETS; readable + not readable == the study list (the readability
+      rule's own partition assertion runs first, and refuses any undetermined study);
+    * `filename`, `filename_tabix` and `md5_hex` set exactly when the study is readable,
+      the readable file is the one its metadata names, and it is GRCh38 (else the build
+      refuses rather than read it at the wrong position);
+    * every metadata row names a readable study (a stray row fails loudly).
     """
-    accs = [s["accession_id"] for s in studies]
-    if len(set(accs)) != len(accs) or not all(accs):
-        raise MvpCatalogError("the study list repeats or omits an accession")
-    stray = set(harmonised) - set(accs)
+    batch = classify_studies(studies, tracker, probes)
+    by = batch.by_study()
+    readable = {acc for acc, r in by.items() if r.readable}
+    stray = set(meta) - readable
     if stray:
-        raise MvpCatalogError(f"harmonized paths for studies not in the list: {sorted(stray)[:5]}")
+        raise MvpCatalogError(f"harmonized metadata for studies that are not readable: "
+                              f"{sorted(stray)[:5]}")
     rows = []
     for s in sorted(studies, key=lambda x: x["accession_id"]):
         acc = s["accession_id"]
@@ -244,24 +269,25 @@ def build_rows(studies: list[dict[str, Any]], harmonised: dict[str, str],
                 raise MvpCatalogError(f"{acc}: an untyped quantitative trait {s['disease_trait']!r}")
             tr["trait_kind"] = KIND_SURVEY
             tr["label"] = f"{tr['label']} (survey answer)"
-        if acc in harmonised:
+        if acc in readable:
             access = ACCESS_HARMONISED
             m = meta.get(acc)
             if m is None or not m.get("data_file_md5sum"):
-                raise MvpCatalogError(f"{acc}: harmonised but no metadata md5 in the snapshot")
-            # `is_sorted` is NOT required: 12 of the 4,442 harmonized MVP files' metadata say
-            # false, all 12 carry a .tbi (HEAD-checked 2026-10-19), and tabix refuses to
-            # index a file whose positions are out of order, so the flag is stale there.
+                raise MvpCatalogError(f"{acc}: harmonized but no metadata md5 in the snapshot")
+            # `is_sorted` is NOT required: on 2026-10-19, 12 of the 4,442 harmonized MVP
+            # files' metadata said false while all 12 carried a .tbi, and tabix refuses to
+            # index a file whose positions are out of order, so the flag was stale (on the
+            # 2026-10-31 re-fetch all 6,017 say true). The probe's range read is the check.
             if m["genome_assembly"] != "GRCh38":
                 raise MvpCatalogError(f"{acc}: harmonized file is {m['genome_assembly']}, "
                                       f"not GRCh38; not readable at a GRCh38 position")
-            filename = harmonised[acc]
-            if not filename.endswith(m["data_file_name"]):
-                raise MvpCatalogError(f"{acc}: metadata names {m['data_file_name']}, list names {filename}")
+            filename = by[acc].data_path
+            if filename.rsplit("/", 1)[-1] != m["data_file_name"]:
+                raise MvpCatalogError(f"{acc}: metadata names {m['data_file_name']}, the "
+                                      f"directory serves {filename}")
             md5, date = m["data_file_md5sum"], m["date_metadata_last_modified"]
         else:
-            access = (ACCESS_RAW_ONLY if s.get("full_summary_stats_available")
-                      else ACCESS_NO_SUMSTATS)
+            access = by[acc].reason.code
             filename, md5, date = "", "", ""
         efo = s.get("efo_traits") or []
         rows.append({
@@ -280,7 +306,11 @@ def build_rows(studies: list[dict[str, Any]], harmonised: dict[str, str],
             "filename_tabix": f"{filename}.tbi" if filename else "",
             "md5_hex": md5, "harmonised_date": date,
         })
-    assert_catalog(rows, set(accs))
+    assert_catalog(rows, set(by))
+    n_read = sum(1 for r in rows if r["access_status"] == ACCESS_HARMONISED)
+    if n_read != len(readable):
+        raise MvpCatalogError(f"{n_read} readable rows written for {len(readable)} readable "
+                              f"studies")
     return rows
 
 
@@ -301,6 +331,34 @@ def assert_catalog(rows: list[dict[str, str]], study_ids: set[str]) -> None:
                                       f"harmonised (status {r['access_status']})")
         if r["trait_kind"] not in TRAIT_KIND_LABELS:
             raise MvpCatalogError(f"{r['outcome_id']}: unknown trait kind {r['trait_kind']!r}")
+
+
+def readable_in_catalog(path: str) -> set[str]:
+    """The studies a written MVP catalog marks readable (`access_status` harmonised)."""
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        return {r["outcome_id"] for r in csv.DictReader(fh, delimiter="\t")
+                if r["access_status"] == ACCESS_HARMONISED}
+
+
+def assert_no_readable_lost(prior_readable: Iterable[str], now_readable: Iterable[str], *,
+                            allow_lost: Iterable[str] = ()) -> None:
+    """A study readable in the prior catalog must stay readable, unless named in
+    `allow_lost`. An outage that answers 404 for served files (EBI, 2026-10-14) reads as
+    unreadable through the probe just as it did through the manifest; this is the check
+    that stops it becoming the catalog. `allow_lost` names the studies a human confirmed
+    gone; a name in it that is still readable, or was never readable, is an error too, so
+    the list cannot go stale silently."""
+    prior, now, allowed = set(prior_readable), set(now_readable), set(allow_lost)
+    stale = sorted(allowed - (prior - now))
+    if stale:
+        raise MvpCatalogError(f"{len(stale)} studies in allow_lost were not lost "
+                              f"(still readable, or never readable), e.g. {stale[:5]}")
+    lost = sorted(prior - now - allowed)
+    if lost:
+        raise MvpCatalogError(
+            f"{len(lost)} studies readable in the prior catalog are unreadable now, e.g. "
+            f"{lost[:5]}; re-probe (an outage looks like this), or name them in allow_lost "
+            f"once confirmed gone at the source")
 
 
 def write_catalog(rows: Iterable[dict[str, str]], path: str) -> int:
@@ -329,17 +387,19 @@ def _gz(text: str) -> bytes:
     return bio.getvalue()
 
 
-def refresh_snapshot(out_dir: str, *, workers: int = 8, log=print) -> dict[str, Any]:  # pragma: no cover - network
-    """Fetch the three source snapshots into `out_dir`; returns their md5s for the pin."""
-    import os
+SNAPSHOT_NAMES = {
+    "studies": "gwas_catalog_studies_pmid39024449.jsonl.gz",
+    "tracker": "harmonisation_tracker_mvp.tsv.gz",
+    "probes": "harmonised_probe_mvp.tsv.gz",
+    "meta": "harmonised_meta_mvp.tsv.gz",
+}
+
+
+def fetch_study_list(sess, *, log=print) -> list[dict[str, Any]]:  # pragma: no cover - network
+    """The MVP study records from the GWAS Catalog REST v2, sorted by accession."""
     from concurrent.futures import ThreadPoolExecutor
 
-    import requests
-    import yaml
-
     from snp_phewas_tabix import get_with_retry
-
-    sess = requests.Session()
 
     def page_of(page: int) -> dict[str, Any]:
         r = get_with_retry(sess, STUDIES_URL.format(page=page), attempts=5, backoff_s=5.0,
@@ -360,13 +420,49 @@ def refresh_snapshot(out_dir: str, *, workers: int = 8, log=print) -> dict[str, 
         raise MvpCatalogError(f"read {len(studies)} study records of {total} "
                               f"({len({s['accession_id'] for s in studies})} distinct)")
     studies.sort(key=lambda s: s["accession_id"])
-    accs = {s["accession_id"] for s in studies}
-    hl = get_with_retry(sess, HARMONISED_LIST_URL, attempts=5, backoff_s=5.0, timeout=600)
-    hl.raise_for_status()
-    full = hl.content
-    lines = sorted(ln for ln in full.decode("utf-8").splitlines()
-                   if len(ln.split("/")) > 2 and ln.split("/")[2] in accs)
-    paths = read_harmonised_paths(_gz("\n".join(lines) + "\n"))
+    return studies
+
+
+def refresh_snapshot(out_dir: str, *, tracker_db: str, probes_tsv: str | None = None,
+                     fetch_studies: bool = False, workers: int = 4,
+                     prior_catalog: str | None = None, allow_lost: Iterable[str] = (),
+                     log=print) -> dict[str, Any]:  # pragma: no cover - network
+    """Write the source snapshots into `out_dir`; returns their md5s and provenance for the
+    pin. `tracker_db` is a local copy of `Harm_sumstats_status.db`. The study list is the
+    pinned one in `out_dir` unless `fetch_studies`. `probes_tsv` reuses probes already taken
+    over the same studies (`snp_phewas_readability.probes_tsv`); otherwise the studies are
+    probed here (polite: `workers` sessions, transport retried). An undetermined
+    study stops the refresh: it must never be written as unreadable."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import requests
+    import yaml
+
+    sess = requests.Session()
+    os.makedirs(out_dir, exist_ok=True)
+    studies_path = os.path.join(out_dir, SNAPSHOT_NAMES["studies"])
+    if fetch_studies:
+        studies = fetch_study_list(sess, log=log)
+    else:
+        with open(studies_path, "rb") as fh:
+            studies = read_studies(fh.read())
+    accs = [s["accession_id"] for s in studies]
+    db = RD.read_tracker_db(tracker_db)
+    db_sha = db.sha256
+    tracker = {a: db.rows_by_study[a] for a in accs if a in db.rows_by_study}
+    if probes_tsv:
+        with open(probes_tsv, encoding="utf-8") as fh:
+            taken = RD.read_probes_tsv(fh.read())
+        probes = {a: taken[a] for a in accs if a in taken}
+        batch = RD.classify_batch(accs, tracker=tracker, probes=probes)
+    else:
+        batch = RD.assess(accs, tracker=tracker, workers=workers)
+    batch.require_determined()
+    by = batch.by_study()
+    paths = {a: r.data_path for a, r in by.items() if r.readable}
+    assert_no_readable_lost(readable_in_catalog(prior_catalog or PRIOR_CATALOG_PATH), paths,
+                            allow_lost=allow_lost)
 
     def meta_of(acc: str) -> dict[str, str]:
         url = DATA_BASE_URL + paths[acc] + "-meta.yaml"
@@ -384,6 +480,7 @@ def refresh_snapshot(out_dir: str, *, workers: int = 8, log=print) -> dict[str, 
                             "file_type": str(m.get("file_type", ""))}
             except requests.RequestException:
                 pass  # a transient error: retry, then raise below
+            time.sleep(5.0 * (attempt + 1))
         raise MvpCatalogError(f"{acc}: harmonized metadata could not be read from {url}")
 
     metas: list[dict[str, str]] = []
@@ -392,22 +489,21 @@ def refresh_snapshot(out_dir: str, *, workers: int = 8, log=print) -> dict[str, 
             metas.append(m)
             if i % 250 == 0 or i == len(paths):
                 log(f"harmonized metadata {i}/{len(paths)}")
-    os.makedirs(out_dir, exist_ok=True)
     blobs = {
-        "studies_jsonl_gz": _gz("".join(json.dumps(s, sort_keys=True) + "\n" for s in studies)),
-        "harmonised_subset_gz": _gz("\n".join(lines) + "\n"),
-        "harmonised_meta_gz": _gz("".join(["\t".join(META_COLUMNS) + "\n"]
-                                          + ["\t".join(m[c] for c in META_COLUMNS) + "\n"
-                                             for m in metas])),
+        "studies": _gz("".join(json.dumps(s, sort_keys=True) + "\n" for s in studies)),
+        "tracker": _gz(RD.tracker_rows_tsv(tracker.values())),
+        "probes": _gz(RD.probes_tsv(r.probe for r in batch.rows)),
+        "meta": _gz("".join(["\t".join(META_COLUMNS) + "\n"]
+                            + ["\t".join(m[c] for c in META_COLUMNS) + "\n" for m in metas])),
     }
-    names = {"studies_jsonl_gz": "gwas_catalog_studies_pmid39024449.jsonl.gz",
-             "harmonised_subset_gz": "harmonised_list_mvp.txt.gz",
-             "harmonised_meta_gz": "harmonised_meta_mvp.tsv.gz"}
-    out: dict[str, Any] = {"harmonised_list_md5": _md5(full),
-                           "harmonised_list_last_modified": hl.headers.get("Last-Modified", ""),
-                           "n_studies": len(studies), "n_harmonised": len(paths)}
+    probed = sorted(r.probe.probed_utc for r in batch.rows)
+    out: dict[str, Any] = {"tracker_sha256": db_sha, "tracker_last_run": db.last_run,
+                           "probed_utc_first": probed[0], "probed_utc_last": probed[-1],
+                           "readability_version": RD.READABILITY_VERSION,
+                           "n_studies": len(studies), "n_readable": len(paths),
+                           "reason_counts": batch.counts()}
     for k, blob in blobs.items():
-        with open(os.path.join(out_dir, names[k]), "wb") as fh:
+        with open(os.path.join(out_dir, SNAPSHOT_NAMES[k]), "wb") as fh:
             fh.write(blob)
-        out[f"{names[k]}_md5"] = _md5(blob)
+        out[f"{SNAPSHOT_NAMES[k]}_md5"] = _md5(blob)
     return out

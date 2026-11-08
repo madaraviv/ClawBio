@@ -226,7 +226,7 @@ def test_the_mvp_subtitle_fits_inside_the_figure(tmp_path, monkeypatch):
     res.provenance = {"mvp_eur": {"scope": "harmonized"}}
     fig = _drawn(monkeypatch, res, tmp_path)
     text, right, edge = _subtitle(fig)
-    assert text.startswith("727 of 1,221 readable outcomes looked up (matched to another biobank)")
-    assert "849 with no readable file" in text and "compressed" in text
+    assert text.startswith("981 of 1,667 readable outcomes looked up (matched to another biobank)")
+    assert "403 with no readable file" in text and "compressed" in text
     assert right <= edge, (text, right, edge)
     plots.plt.close(fig)

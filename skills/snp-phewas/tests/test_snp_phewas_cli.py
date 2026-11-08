@@ -81,7 +81,7 @@ def test_demo_report_states_scope_sources_and_disclaimer(demo_out):
     assert summary.count("(over the 2 outcomes looked up)") == 1
     assert "phenome-wide" not in summary
     # an MVP study with no readable file is never counted as read
-    assert ("tested in 2 of 2 outcomes read (2,070 in the catalog, 849 of them with no "
+    assert ("tested in 2 of 2 outcomes read (2,070 in the catalog, 403 of them with no "
             "readable file)") in summary
     import json
 
@@ -200,11 +200,11 @@ def test_a_matched_read_says_so_first_with_its_counts(offline_kwargs, tmp_path):
     assert ("**This was the quicker read: Pan-UK Biobank (European ancestry), FinnGen R12 "
             "(Finnish) and Million Veteran Program (European genetic ancestry) were read only "
             "over the outcomes matched across the biobanks, the same rule in each.**") in covers
-    assert ("Million Veteran Program (European genetic ancestry): read over the 727 outcomes "
+    assert ("Million Veteran Program (European genetic ancestry): read over the 981 outcomes "
             "with a readable counterpart in FinnGen or Pan-UK Biobank") in covers
-    assert "494 were not looked up and 849 have no readable file" in covers
+    assert "686 were not looked up and 403 have no readable file" in covers
     summary = report.split("## Summary", 1)[1].split("## Notes", 1)[0]
-    assert "tested in 0 of 727 outcomes read (2,070 in the catalog, 849 of them" in summary
+    assert "tested in 0 of 981 outcomes read (2,070 in the catalog, 403 of them" in summary
 
 
 def test_reproducibility_bundle_verifies_from_the_output_dir(demo_out):
@@ -287,8 +287,9 @@ def test_demo_through_the_runner_writes_only_under_output(tmp_path):
 
 
 def test_a_live_run_warns_about_the_index_download_before_it_starts(monkeypatch, capsys, tmp_path):
-    """The first default run downloads 4.53 GB of index files (summed from Content-Length for
-    the matched files of the three biobanks); the user hears it, and what will be read, first."""
+    """The first default run downloads at least 4.53 GB of index files (summed from
+    Content-Length for the matched files of the three biobanks over the 2026-10-19 MVP
+    catalog); the user hears it, and what will be read, first."""
     import snp_phewas as cli
 
     def stop(*a, **k):
@@ -298,12 +299,12 @@ def test_a_live_run_warns_about_the_index_download_before_it_starts(monkeypatch,
     with pytest.raises(SystemExit):
         cli.main(["--variant", "rs12740374", "--output", str(tmp_path)])
     err = capsys.readouterr().err
-    assert "4.53 GB" in err and "(1,156, 622, 727 files in Pan-UK Biobank (European ancestry), " \
+    assert "at least 4.53 GB" in err and "(1,363, 622, 981 files in Pan-UK Biobank (European ancestry), " \
         "FinnGen R12 (Finnish) and Million Veteran Program (European genetic ancestry))" in err
     with pytest.raises(SystemExit):
         cli.main(["--variant", "rs12740374", "--all-outcomes", "--output", str(tmp_path)])
     err = capsys.readouterr().err
-    assert "20.0 GB" in err and "(7,160, 2,469, 1,221 files" in err
+    assert "at least 20.0 GB" in err and "(7,160, 2,469, 1,667 files" in err
 
 
 def test_a_low_confidence_value_is_flagged_and_never_counted_as_a_pass(offline_kwargs, tmp_path):

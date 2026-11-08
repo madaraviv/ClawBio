@@ -12,9 +12,11 @@ source that changed under us fails loudly instead of silently producing a differ
 universe (a release bump edits the pin and re-derives everything keyed on it).
 
 Million Veteran Program: the GWAS Catalog publishes no single manifest, so its catalog is
-built OFFLINE from the three snapshots vendored in `catalogs/mvp_source/` (refreshed by hand
-with `snp_phewas_mvp_catalog.refresh_snapshot`, which needs the network), each checked
-against its md5 pin. `--families mvp` rebuilds only that one, with no network call, and the
+built OFFLINE from the four snapshots vendored in `catalogs/mvp_source/` (study list,
+harmonization-tracker rows, harmonized-directory probes, readable files' metadata; refreshed
+by hand with `snp_phewas_mvp_catalog.refresh_snapshot`, which needs the network), each
+checked against its md5 pin. Readability is re-derived from the tracker rows and probes by
+the rule in `snp_phewas_readability`. `--families mvp` rebuilds only that one, with no network call, and the
 offline tests check the rebuild is byte-identical to the committed file.
 """
 
@@ -127,12 +129,13 @@ def build_mvp() -> list[dict[str, str]]:
 
     studies = M.read_studies(pinned("study_list_snapshot", "study_list_md5",
                                     "MVP GWAS Catalog study list snapshot"))
-    harmonised = M.read_harmonised_paths(pinned("harmonised_subset_snapshot",
-                                                "harmonised_subset_md5",
-                                                "MVP harmonised_list.txt subset"))
+    tracker = M.read_tracker_rows(pinned("tracker_snapshot", "tracker_snapshot_md5",
+                                         "MVP harmonization tracker rows"))
+    probes = M.read_probes(pinned("probe_snapshot", "probe_snapshot_md5",
+                                  "MVP harmonized-directory probes"))
     meta = M.read_meta(pinned("harmonised_meta_snapshot", "harmonised_meta_md5",
                               "MVP harmonized file metadata"))
-    return M.build_rows(studies, harmonised, meta)
+    return M.build_rows(studies, tracker, probes, meta)
 
 
 def main(argv: list[str] | None = None) -> int:

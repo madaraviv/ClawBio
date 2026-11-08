@@ -72,21 +72,37 @@ families:
     coding: FinnGen clinical endpoints (ICD-10 / ICD-9 / ATC register definitions)
   mvp:
     label: Million Veteran Program
-    release: mvp_gwphewas_gwascatalog_2026-10-19
+    release: mvp_gwphewas_gwascatalog_2026-10-31
     release_pin:
       # The GWAS Catalog publishes no single manifest for MVP: the catalog is built from
-      # three snapshots vendored in catalogs/mvp_source/ (snp_phewas_mvp_catalog.refresh_snapshot),
-      # each md5-pinned here. A re-pin rebuilds everything keyed on this release.
-      study_list_source: GWAS Catalog REST v2 studies?pubmed_id=39024449 (7,537 studies)
+      # four snapshots vendored in catalogs/mvp_source/ (snp_phewas_mvp_catalog.refresh_snapshot),
+      # each md5-pinned here. Readability is re-derived offline from the tracker rows and the
+      # probes by snp_phewas_readability (the probe decides, the tracker names the reason,
+      # the harmonised_list.txt manifest decides nothing). A re-pin rebuilds everything
+      # keyed on this release (the catalog and the crosswalk).
+      study_list_source: GWAS Catalog REST v2 studies?pubmed_id=39024449 (7,537 studies, fetched 2026-10-19)
       study_list_snapshot: catalogs/mvp_source/gwas_catalog_studies_pmid39024449.jsonl.gz
       study_list_md5: fa97a3e835b9364f1b82322874e986d9
-      harmonised_list_url: https://ftp.ebi.ac.uk/pub/databases/gwas/summary_statistics/harmonised_list.txt
-      harmonised_list_last_modified: "2026-10-19 00:01:01 GMT"
-      harmonised_list_md5: 9bfab40b4f4182f73927b42c786905a9
-      harmonised_subset_snapshot: catalogs/mvp_source/harmonised_list_mvp.txt.gz
-      harmonised_subset_md5: 65e55fe26a3e33203771eef55a6d2f33
+      readability_rule: snp_phewas_readability 1.1.0
+      readability_checked: "2026-10-31"
+      tracker_url: https://ftp.ebi.ac.uk/pub/databases/gwas/summary_statistics/sumstats_harm_status/Harm_sumstats_status.db
+      tracker_sha256: bc0230490f7af54ae2a36663d78fa9097b1d38edd1429063b43e9894a695b38e
+      tracker_last_run: "2026-10-30T04:07:15.481449"
+      tracker_fetched_utc: "2026-10-31T03:09:55Z"
+      tracker_snapshot: catalogs/mvp_source/harmonisation_tracker_mvp.tsv.gz
+      tracker_snapshot_md5: fba40f73b852ad8f4cd9a7ef9881174d
+      probe_snapshot: catalogs/mvp_source/harmonised_probe_mvp.tsv.gz
+      probe_snapshot_md5: b8afea1f7e1c43bb502f0656f4985234
+      probed_utc: "2026-11-01T02:13:58Z to 2026-11-01T02:20:07Z (2026-10-31 evening ET)"
       harmonised_meta_snapshot: catalogs/mvp_source/harmonised_meta_mvp.tsv.gz
-      harmonised_meta_md5: 4c86dce3c9a9c085829dd5dd92189b29
+      harmonised_meta_md5: 6e5a0da7d05389d25356a66ea08b59a2
+      # Provenance only, read by nothing: the 2026-10-19 manifest's MVP lines, which the
+      # previous release decided readability from.
+      provenance_manifest_url: https://ftp.ebi.ac.uk/pub/databases/gwas/summary_statistics/harmonised_list.txt
+      provenance_manifest_last_modified: "2026-10-19 00:01:01 GMT"
+      provenance_manifest_md5: 9bfab40b4f4182f73927b42c786905a9
+      provenance_manifest_subset: catalogs/mvp_source/harmonised_list_mvp.txt.gz
+      provenance_manifest_subset_md5: 65e55fe26a3e33203771eef55a6d2f33
     license: GWAS Catalog terms of use (EMBL-EBI places no additional restrictions; MVP deposited without a license text)
     license_verdict: open; no restrictions beyond the data owner's; citation given
     license_verified: "2026-10-19"

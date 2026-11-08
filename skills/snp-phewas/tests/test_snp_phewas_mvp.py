@@ -81,28 +81,55 @@ def _snapshot():
             return fh.read()
 
     return (M.read_studies(rd("study_list_snapshot")),
-            M.read_harmonised_paths(rd("harmonised_subset_snapshot")),
+            M.read_tracker_rows(rd("tracker_snapshot")),
+            M.read_probes(rd("probe_snapshot")),
             M.read_meta(rd("harmonised_meta_snapshot")))
 
 
 def test_each_write_time_assertion_fires_on_a_constructed_failure():
-    studies, harm, meta = _snapshot()
-    rows = M.build_rows(studies, harm, meta)
+    import dataclasses
+
+    studies, tracker, probes, meta = _snapshot()
+    rows = M.build_rows(studies, tracker, probes, meta)
     ids = {r["outcome_id"] for r in rows}
+    readable = sorted(r["outcome_id"] for r in rows if r["access_status"] == M.ACCESS_HARMONISED)
+    acc = readable[0]
     with pytest.raises(M.MvpCatalogError, match="repeats or omits"):
-        M.build_rows(studies + studies[:1], harm, meta)
+        M.build_rows(studies + studies[:1], tracker, probes, meta)
+    # a dropped study (its probe and metadata outlive it) and an invented one (a probe for a
+    # study the list does not hold): the readability rule's partition check fires on both
+    dropped = [s for s in studies if s["accession_id"] != acc]
+    with pytest.raises(M.MvpCatalogError, match="outside the universe"):
+        M.build_rows(dropped, {k: v for k, v in tracker.items() if k != acc}, probes, meta)
+    invented = {**probes, "GCST99999999": dataclasses.replace(probes[acc], study="GCST99999999")}
+    with pytest.raises(M.MvpCatalogError, match="outside the universe"):
+        M.build_rows(studies, tracker, invented, meta)
+    with pytest.raises(M.MvpCatalogError, match="have no probe"):
+        M.build_rows(studies, tracker, {k: v for k, v in probes.items() if k != acc}, meta)
     with pytest.raises(M.MvpCatalogError, match="not in the list"):
-        M.build_rows(studies[1:], harm, meta) if studies[0]["accession_id"] in harm else \
-            M.build_rows([s for s in studies if s["accession_id"] != next(iter(harm))], harm, meta)
-    acc = next(iter(harm))
+        M.build_rows(dropped, tracker, {k: v for k, v in probes.items() if k != acc}, meta)
+    # a study the probe could not reach is never written as unreadable: the build refuses
+    unreached = {**probes, acc: dataclasses.replace(probes[acc], harm_dir_http=0, data_file="",
+                                                    data_files=(), tbi_present=False,
+                                                    range_http=None, bgzf=None)}
+    with pytest.raises(M.MvpCatalogError, match="transport"):
+        M.build_rows(studies, tracker, unreached, meta)
+    # metadata for a study that is not readable is a stray row
+    unread = next(r["outcome_id"] for r in rows if r["access_status"] != M.ACCESS_HARMONISED)
+    with pytest.raises(M.MvpCatalogError, match="not readable"):
+        M.build_rows(studies, tracker, probes, {**meta, unread: meta[acc]})
     bad_meta = copy.deepcopy(meta)
     bad_meta[acc]["data_file_md5sum"] = ""
     with pytest.raises(M.MvpCatalogError, match="no metadata md5"):
-        M.build_rows(studies, harm, bad_meta)
+        M.build_rows(studies, tracker, probes, bad_meta)
     bad_meta = copy.deepcopy(meta)
     bad_meta[acc]["genome_assembly"] = "GRCh37"
     with pytest.raises(M.MvpCatalogError, match="not GRCh38"):
-        M.build_rows(studies, harm, bad_meta)
+        M.build_rows(studies, tracker, probes, bad_meta)
+    bad_meta = copy.deepcopy(meta)
+    bad_meta[acc]["data_file_name"] = "other.h.tsv.gz"
+    with pytest.raises(M.MvpCatalogError, match="directory serves"):
+        M.build_rows(studies, tracker, probes, bad_meta)
     # a filename on a study that is not harmonized, and a lost row
     raw = next(r for r in rows if r["access_status"] != M.ACCESS_HARMONISED)
     with pytest.raises(M.MvpCatalogError, match="set exactly when harmonised"):
@@ -112,7 +139,19 @@ def test_each_write_time_assertion_fires_on_a_constructed_failure():
     odd = copy.deepcopy(studies)
     odd[0]["discovery_ancestry"] = ["100 Martian (U.S.)"]
     with pytest.raises(M.MvpCatalogError, match="unknown MVP discovery ancestry"):
-        M.build_rows(odd, harm, meta)
+        M.build_rows(odd, tracker, probes, meta)
+
+
+def test_the_manifest_decides_nothing_and_every_unreadable_study_carries_a_real_reason():
+    """Readability is the probe plus the tracker. Every unreadable row's status is a
+    readability reason with a plain label; none is the manifest-era code."""
+    studies, tracker, probes, meta = _snapshot()
+    rows = M.build_rows(studies, tracker, probes, meta)
+    codes = {r["access_status"] for r in rows}
+    assert codes <= set(M.ACCESS_STATUSES)
+    assert not codes & {"raw_only_unindexed", "no_summary_statistics", "transport"}
+    for code in codes:
+        assert M.ACCESS_STATUS_LABELS[code]
 
 
 def test_trait_population_and_sample_size_parsing():
@@ -141,10 +180,11 @@ def test_catalog_counts_on_the_snapshot():
     for o in rows:
         kinds[(o.trait_type, o.access_status == "harmonised")] = kinds.get(
             (o.trait_type, o.access_status == "harmonised"), 0) + 1
-    # counted on the 2026-10-19 GWAS Catalog snapshot
-    assert kinds == {("phecode", True): 930, ("phecode", False): 686,
-                     ("quantitative", True): 107, ("quantitative", False): 107,
-                     ("survey_binary", True): 184, ("survey_binary", False): 56}
+    # the 2026-10-31 readability probe (2026-10-19 manifest-based: 930/686, 107/107, 184/56;
+    # +446 readable = the 448 EUR raw-only studies less GCST90475858 and one untracked upload)
+    assert kinds == {("phecode", True): 1236, ("phecode", False): 380,
+                     ("quantitative", True): 199, ("quantitative", False): 15,
+                     ("survey_binary", True): 232, ("survey_binary", False): 8}
     assert all(o.outcome_id.startswith("GCST") for o in rows)
     labels = [o.outcome_label for o in rows]
     assert len(set(labels)) == len(labels)
@@ -338,12 +378,21 @@ def test_lookup_on_the_slices_orients_withholds_and_accounts_for_every_mvp_study
     assert by[IHD].harmonized_outcome_id == "PHECODE:411"
     assert by[LDL].status_detail == P_UNDERFLOW_DETAIL
     counts = r.status_counts("mvp_eur")
-    assert counts[S.ST_NOT_READABLE] == 849 and counts[S.ST_OK] == 2
-    assert counts[S.ST_NOT_QUERIED] == 2070 - 849 - 2
+    assert counts[S.ST_NOT_READABLE] == 403 and counts[S.ST_OK] == 2  # 2026-10-31 probe
+    assert counts[S.ST_NOT_QUERIED] == 2070 - 403 - 2
     # not readable is outside the significance denominator, like not looked up
     assert S.phenome_wide_n(rows) == 2
-    assert any("1,221 of 2,070 outcomes are readable" in n and "448 not harmonized" in n
-               and "401 deposited without summary statistics" in n for n in r.notes)
+    # each unreadable study is counted under its real reason, with the probe date; the
+    # manifest-era "not harmonized" never appears
+    sentence = next(n for n in r.notes if "outcomes are readable" in n)
+    assert sentence.startswith("Million Veteran Program")
+    assert ("1,667 of 2,070 outcomes are readable; the other 403 cannot be read by position "
+            "from the GWAS Catalog (checked at the source on 2026-10-31: no summary "
+            "statistics deposited at the GWAS Catalog: 401; ") in sentence
+    assert "queued for harmonization by the GWAS Catalog, no file yet: 1" in sentence
+    assert ("held by the GWAS Catalog only as an unharmonized upload, which cannot be read by "
+            "position: 1") in sentence
+    assert "not harmonized by the GWAS Catalog" not in sentence
     # a hm_code 9 record at the target: same p, no direction, no beta
     real = src.record_from_fields
 
@@ -390,12 +439,13 @@ def test_an_unreadable_study_is_answered_from_the_catalog_with_no_network(monkey
 
     monkeypatch.setattr(src, "read_outcome_file",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("read attempted")))
-    o = next(o for o in load_outcome_catalog("mvp_eur") if o.access_status == "raw_only_unindexed")
+    o = next(o for o in load_outcome_catalog("mvp_eur") if o.access_status == "untracked_no_deposit")
     rec = _reader().read_outcome(o, TARGET)
-    assert rec.status == S.ST_NOT_READABLE and rec.detail.startswith("raw_only_unindexed:")
-    none = OutcomeSpec("mvp_eur", "GCSTX", "x", "", "binary", None, 1, 1, None,
-                       access_status="no_summary_statistics")
-    assert _reader().read_outcome(none, TARGET).detail.startswith("no_summary_statistics:")
+    assert rec.status == S.ST_NOT_READABLE and rec.detail.startswith("untracked_no_deposit:")
+    missing = OutcomeSpec("mvp_eur", "GCSTX", "x", "", "binary", None, 1, 1, None,
+                          access_status="tracker_harmonised_file_missing")
+    detail = _reader().read_outcome(missing, TARGET).detail
+    assert detail.startswith("tracker_harmonised_file_missing: recorded as harmonized")
 
 
 def test_an_mvp_phecode_takes_the_pan_ukbb_category_of_the_same_code():
@@ -537,13 +587,31 @@ class _Fixed:
                                                        "elapsed_s": 0.0}
 
 
-def test_an_outage_never_changes_the_representative_or_the_threshold():
-    """MVP AFR holds two studies for phecode 274.1: GCST90476378 (readable, 6,538 cases) and
-    GCST90475734 (no readable file, 14,437 cases). With the readable one unreachable, the
-    case-count tie-break picked the unreadable one, which the threshold never counts, so an
-    outage cut the shared count (213 -> 212 in this construction) and loosened 0.05 / n. A
-    study known unreadable from the catalog is never the representative over a readable one."""
+def test_an_outage_never_changes_the_representative_or_the_threshold(monkeypatch):
+    """MVP AFR holds two studies for phecode 274.1: GCST90476378 (6,538 cases) and
+    GCST90475734 (14,437 cases). On the 2026-10-19 catalog the larger one had no readable
+    file; with the readable one unreachable, the case-count tie-break picked the unreadable
+    one, which the threshold never counts, so an outage cut the shared count and loosened
+    0.05 / n. A study known unreadable from the catalog is never the representative over a
+    readable one. Since the 2026-10-31 readability probe both are readable and no MVP phecode
+    has an unreadable study larger than a readable one, so the condition is CONSTRUCTED here:
+    GCST90475734 is marked unreadable in the catalog the lookup reads."""
+    import dataclasses
+
+    import snp_phewas_lookup as lk
     from snp_phewas_replication import build_replication
+
+    real = lk.load_outcome_catalog
+
+    def with_unreadable(dsid):
+        out = real(dsid)
+        if dsid != "mvp_afr":
+            return out
+        return [dataclasses.replace(o, access_status="untracked_no_deposit", filename=None,
+                                    filename_tabix=None, md5_hex=None)
+                if o.outcome_id == "GCST90475734" else o for o in out]
+
+    monkeypatch.setattr(lk, "load_outcome_catalog", with_unreadable)
 
     pair = ("pan_ukbb_afr", "mvp_afr")
     shared, reps = {}, {}
@@ -567,3 +635,19 @@ def test_the_meta_fallback_sentence_names_the_group_without_nested_brackets():
     finngen = [s for s in said if "FinnGen" in s]
     assert finngen == ["This lookup serves no multi-population meta-analysis for FinnGen, so "
                        "its default group is shown instead: FinnGen R12 (Finnish)."]
+
+
+def test_a_refresh_refuses_a_readable_study_turning_unreadable():
+    """An outage answering 404 for served files reads as unreadable through the probe
+    exactly as it did through the manifest (2026-10-14); the refresh must stop."""
+    assert_no_readable_lost = M.assert_no_readable_lost
+    assert_no_readable_lost({"A", "B"}, {"A", "B", "C"})  # gaining is fine
+    with pytest.raises(M.MvpCatalogError, match="1 studies readable in the prior catalog"):
+        assert_no_readable_lost({"A", "B"}, {"A"})
+    assert_no_readable_lost({"A", "B"}, {"A"}, allow_lost={"B"})  # confirmed gone
+    with pytest.raises(M.MvpCatalogError, match="were not lost"):
+        assert_no_readable_lost({"A", "B"}, {"A", "B"}, allow_lost={"B"})  # stale list
+
+
+def test_the_committed_catalog_reads_back_its_readable_set():
+    assert len(M.readable_in_catalog(M.PRIOR_CATALOG_PATH)) == 6017

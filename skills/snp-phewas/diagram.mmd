@@ -5,7 +5,7 @@ flowchart TD
     FG_API -->|censored endpoints, or API down| FG_TBX["FinnGen R12 endpoint files<br/>index walker, one position"]
     M --> PAN["Pan-UK Biobank outcome files<br/>index walker, one position"]
     R --> MVP["Million Veteran Program<br/>GWAS Catalog harmonized files, index walker<br/>CRLF lines; odds ratio to beta / SE from the file's p;<br/>p = 0 derived from beta / SE; autosomes only"]
-    MVPCAT[("MVP catalog: 7,537 studies<br/>harmonized / not harmonized /<br/>no summary statistics")] -.->|no readable file: a row with<br/>its reason, never read| ROWS
+    MVPCAT[("MVP catalog: 7,537 studies, 6,017 readable (EUR 1,667 of 2,070)<br/>readability = probe of the harmonized directory,<br/>reason from EBI's harmonization tracker; never the manifest")] -.->|no readable file: a row with<br/>its reason, never read| ROWS
     ANC["--ancestry AFR / AMR / CSA / EAS / MID / META<br/>each biobank's group; a biobank without it is named"] -.-> SCOPE
     SCOPE{"scope"} -.->|default: outcomes with a readable counterpart<br/>in another biobank, the same rule in each;<br/>--all-outcomes: every outcome| PAN
     SCOPE -.-> FG_TBX

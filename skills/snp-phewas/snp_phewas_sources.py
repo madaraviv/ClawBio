@@ -370,9 +370,9 @@ class PanUkbbReader:
 
 
 def not_readable_record(o: OutcomeSpec) -> RawRecord | None:
-    """`source_file_not_readable` for a catalog outcome the source holds with no
-    position-indexed file (an MVP study the GWAS Catalog has not harmonized), with the
-    reason first in `detail` (`raw_only_unindexed: ...`); None for a readable outcome. Known
+    """`source_file_not_readable` for a catalog outcome with no file readable by position
+    (an MVP study the readability probe found unreadable), with the reason code first in
+    `detail` (`tracker_harmonised_file_missing: ...`); None for a readable outcome. Known
     from the catalog, so it costs no network call and holds whatever the lookup's scope."""
     if o.access_status is None or (o.access_status == "harmonised" and o.filename):
         return None
@@ -385,9 +385,9 @@ def not_readable_record(o: OutcomeSpec) -> RawRecord | None:
 class MvpReader:
     """Million Veteran Program studies through the GWAS Catalog's harmonized files.
 
-    A catalog row the Catalog has not harmonized (`access_status` raw_only_unindexed or
-    no_summary_statistics) has no position-indexed file: it is answered
-    `source_file_not_readable` with the reason, without a network call."""
+    A catalog row whose `access_status` is a readability reason (anything but
+    `harmonised`) has no file readable by position: it is answered
+    `source_file_not_readable` with that reason, without a network call."""
 
     def __init__(self, spec: DatasetSpec, *, index_cache: str | None = None,
                  workers: int = DEFAULT_WORKERS, data_base: str | None = None) -> None:

@@ -464,7 +464,17 @@ def manhattan(result: Any, out_png: str, *, stats: dict | None = None) -> str:
             sub += f"  ·  {n_drop} not labeled for space (see table)"
         if knee:
             sub += f"  ·  shaded: y axis compressed above {knee:g}"
-        ax.text(0, 1.02, sub, transform=ax.transAxes, fontsize=8, color=INK_2, va="bottom")
+        sub_t = ax.text(0, 1.02, sub, transform=ax.transAxes, fontsize=8, color=INK_2,
+                        va="bottom")
+        if sub_t.get_window_extent(renderer).x1 > fig.get_window_extent(renderer).x1 - 4:
+            # too long for one line (a panel with many hits, some unlabeled, and a compressed
+            # axis): break it between two of its parts, and lift the title over both lines
+            parts = sub.split("  ·  ")
+            k = min(range(1, len(parts)), key=lambda j: abs(
+                len("  ·  ".join(parts[:j])) - len("  ·  ".join(parts[j:]))))
+            sub_t.set_text("  ·  ".join(parts[:k]) + "\n" + "  ·  ".join(parts[k:]))
+            ax.set_title(spec.label, fontsize=10.5, color=INK, loc="left", fontweight="bold",
+                         pad=27)
     v = result.variant
     fig.text(0.06, 1 - 0.25 * top_pad, f"{v.rs_id or v.variant_id_grch38}  ·  "
              f"{v.variant_id_grch38}  ·  effect allele {v.grch38.alt}", fontsize=12, color=INK,

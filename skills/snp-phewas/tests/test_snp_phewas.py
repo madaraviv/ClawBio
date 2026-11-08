@@ -83,7 +83,8 @@ def test_outcome_catalog_sizes_are_the_published_manifests():
                      "mvp_meta": 1731}
     eur = {o.outcome_id: o for o in load_outcome_catalog("mvp_eur")}
     assert Counter(o.access_status for o in eur.values()) == {
-        "harmonised": 1221, "raw_only_unindexed": 448, "no_summary_statistics": 401}
+        "harmonised": 1667, "untracked_no_deposit": 401, "tracker_queued": 1,
+        "untracked_unharmonised": 1}  # the 2026-10-31 readability probe
     ihd, ldl_mvp = eur["GCST90475929"], eur["GCST90475416"]
     assert (ihd.outcome_label, ihd.n_cases, ihd.n_controls, ihd.outcome_kind) == (
         "Ischemic heart disease", 141465, 275809, "binary")
@@ -585,20 +586,21 @@ def test_default_scope_reads_the_matched_set_in_every_biobank_and_says_so(offlin
     assert any("622 outcomes with a readable counterpart in Pan-UK Biobank" in n for n in r.notes)
     # three biobanks (the default): each reads what matches EITHER other biobank. A
     # counterpart counts only if it is readable and in a dataset of THIS lookup (any MVP
-    # study of any ancestry would make it 1,538 / 622 / 1,187).
+    # study of any ancestry would make it 1,538 / 622 / 1,187). The 2026-10-31 readability
+    # probe made 446 more mvp_eur studies readable: 1,156 / 727 became 1,363 / 981.
     readers = _counting()
     offline_kwargs.update(readers=readers)
     r = lookup_variant("rs12740374", **offline_kwargs)
     asked = {d: len(x.asked) for d, x in readers.items()}
-    assert asked == {"pan_ukbb_eur": 1156, "finngen_r12": 622, "mvp_eur": 727}
+    assert asked == {"pan_ukbb_eur": 1363, "finngen_r12": 622, "mvp_eur": 981}
     assert {d: r.provenance[d]["n_queried"] for d in r.dataset_ids} == asked
     readable = {o.outcome_id for o in load_outcome_catalog("mvp_eur")
                 if o.access_status == "harmonised"}
     assert matched_outcome_ids("mvp_eur", list(r.dataset_ids)) <= readable
-    assert any("1,156 outcomes with a readable counterpart in FinnGen or Million Veteran "
+    assert any("1,363 outcomes with a readable counterpart in FinnGen or Million Veteran "
                "Program" in n for n in r.notes)
-    assert any("727 outcomes with a readable counterpart in FinnGen or Pan-UK Biobank" in n
-               and "494 were not looked up and 849 have no readable file" in n
+    assert any("981 outcomes with a readable counterpart in FinnGen or Pan-UK Biobank" in n
+               and "686 were not looked up and 403 have no readable file" in n
                for n in r.notes)
     # a study with no readable file is a row with its reason whatever the scope
     unread = {o.outcome_id for o in load_outcome_catalog("mvp_eur") if o.access_status != "harmonised"}
@@ -608,14 +610,14 @@ def test_default_scope_reads_the_matched_set_in_every_biobank_and_says_so(offlin
     r = lookup_variant("rs12740374", scope="all", **offline_kwargs)
     asked = {d: len(x.asked) for d, x in readers.items()}
     # every readable outcome in every biobank; the unreadable studies never reach a reader
-    assert asked == {"pan_ukbb_eur": 7160, "finngen_r12": 2469, "mvp_eur": 1221}
+    assert asked == {"pan_ukbb_eur": 7160, "finngen_r12": 2469, "mvp_eur": 1667}
     assert r.provenance["pan_ukbb_eur"]["scope"] == "all"
 
 
 def test_one_biobank_alone_is_read_in_full_because_there_is_no_replication_view(offline_kwargs):
     """The matched-outcome cut exists for the cross-biobank comparison; with no other biobank
     in the lookup its stated reason would be false, so one biobank alone reads everything."""
-    for ds, n in (("pan_ukbb_eur", 7160), ("finngen_r12", 2469), ("mvp_eur", 1221)):
+    for ds, n in (("pan_ukbb_eur", 7160), ("finngen_r12", 2469), ("mvp_eur", 1667)):
         readers = _counting()
         offline_kwargs.update(readers=readers, outcomes=None)
         r = lookup_variant("rs12740374", datasets=ds, **offline_kwargs)
