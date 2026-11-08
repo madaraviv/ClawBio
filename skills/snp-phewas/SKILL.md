@@ -199,8 +199,8 @@ biobanks and nothing else. It does not fine-map, colocalize, run MR, or search l
    index once into the cache and read the one position with the skill's own index walker.
 5. **Read FinnGen** (prescriptive): one web-API request for all endpoints, then a file read
    for every endpoint the API censored (route `hybrid`).
-6. **Read the Million Veteran Program** (prescriptive): a study the GWAS Catalog has not
-   harmonized (or holds without summary statistics) is a `source_file_not_readable` row
+6. **Read the Million Veteran Program** (prescriptive): a study with no file readable by
+   position on the catalog's probe is a `source_file_not_readable` row with its reason,
    from the catalog, with no network call; every other study is read from its harmonized
    file with the same index walker. An X / Y / MT variant is absent by rule (MVP released
    autosomal results only).
