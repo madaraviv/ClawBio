@@ -454,3 +454,89 @@ def test_a_finngen_only_read_offers_no_other_groups(offline_kwargs):
 
     res = lookup_variant("rs12740374", datasets="finngen_r12", **offline_kwargs)
     assert snp_phewas._other_groups_sentence(res) is None
+
+
+def _resolver_down(rsid):
+    from snp_phewas_tabix import SourceUnreachable
+
+    raise SourceUnreachable("Open Targets variant search: ConnectionError")
+
+
+def _resolver_refused(rsid):
+    from snp_phewas_tabix import QueryRefused
+
+    raise QueryRefused("Open Targets variant search: HTTP 400")
+
+
+@pytest.mark.parametrize("query, resolver, code, says", [
+    # an Open Targets outage while resolving the rsID: retryable, the outage code
+    ("rs12740374", _resolver_down, 3, "this is an outage, not an absence"),
+    # Open Targets answered and refused the query: a SourceUnreachable, but not an outage
+    ("rs12740374", _resolver_refused, 5, "refused the query"),
+    # Open Targets answered and has no such variant
+    ("rs999999999999", lambda rsid: [], 4, "Open Targets has no variant for rs999999999999"),
+    # neither an rsID nor a variant id: refused before any network call
+    ("not-a-variant", None, 4, "is neither an rsID"),
+])
+def test_a_resolver_failure_is_one_plain_line_and_its_own_exit_code(
+        tmp_path, monkeypatch, capsys, query, resolver, code, says):
+    """A resolver failure ended the CLI in a traceback (no source answered vs no such
+    variant were also one code). Each class now prints one plain line last on stderr, writes
+    nothing, and exits with its own code."""
+    import snp_phewas as cli
+    from snp_phewas_demo import demo_kwargs
+
+    real = cli.lookup_variant
+
+    def offline(variant, **kw):
+        kw.update(demo_kwargs(outcomes=None))
+        if resolver is not None:
+            kw["rsid_resolver"] = resolver
+        return real(variant, **kw)
+
+    monkeypatch.setattr(cli, "lookup_variant", offline)
+    out = tmp_path / "run"
+    assert cli.main(["--variant", query, "--output", str(out)]) == code
+    last = capsys.readouterr().err.strip().splitlines()[-1]
+    assert last.startswith(f"snp-phewas: {query} ") and says in last, last
+    assert ("a retry will not help" in last) == (code == 5)
+    assert ("fault in this tool, not in your query" in last) == (code == 5)
+    assert ("outage" in last) == (code == 3)
+    # the exception text names the call that failed; the person at the terminal gets the
+    # plain sentence only
+    for raw in ("ConnectionError", "HTTP 400", "Open Targets variant search"):
+        assert raw not in last, last
+    assert not out.exists()  # nothing written: there is no result to inspect
+
+
+def test_the_exit_codes_are_distinct_per_failure_class():
+    import snp_phewas as cli
+
+    assert {cli.EXIT_OUTAGE, cli.EXIT_UNRESOLVED, cli.EXIT_REFUSED} == {3, 4, 5}
+
+
+@pytest.mark.parametrize("args, says", [
+    (["--dataset", "nope"], "'nope' is not a curated dataset"),
+    (["--outcomes", "icd10-E78-both_sexes"], "each entry is dataset_id:outcome_id"),
+    (["--outcomes", "nope:x"], "'nope' is not a curated dataset"),
+    (["--outcomes", "pan_ukbb_eur:nope"], "pan_ukbb_eur has no outcome 'nope'"),
+    (["--dataset", "pan_ukbb_eur", "--outcomes", "finngen_r12:I9_CHD"],
+     "finngen_r12 is not one of the datasets this run reads (pan_ukbb_eur)"),
+])
+def test_argument_errors_exit_2_before_any_lookup(tmp_path, monkeypatch, capsys, args, says):
+    """An unknown --dataset was a traceback, and an --outcomes entry for a dataset the run
+    does not read was silently ignored. argparse now refuses each before any lookup."""
+    import snp_phewas as cli
+
+    def reached(*a, **k):
+        raise AssertionError("reached the lookup")
+
+    monkeypatch.setattr(cli, "lookup_variant", reached)
+    out = tmp_path / "run"
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--variant", "rs12740374", *args, "--output", str(out)])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert says in err.strip().splitlines()[-1], err
+    assert "Traceback" not in err
+    assert not out.exists()

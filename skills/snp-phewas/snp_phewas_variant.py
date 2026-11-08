@@ -147,7 +147,20 @@ def ensembl_map(from_build: str, chrom: str, start: int, end: int, to_build: str
         raise SourceUnreachable(f"Ensembl assembly mapper: {type(e).__name__}") from e
     if r.status_code != 200:
         raise SourceUnreachable(f"Ensembl assembly mapper answered HTTP {r.status_code}")
-    return list(r.json().get("mappings") or [])
+    try:
+        body = r.json()
+    except ValueError as e:
+        # a 200 whose body is not JSON (a maintenance page): an outage, as the Open Targets
+        # path classifies it; requests' JSONDecodeError is a ValueError
+        raise SourceUnreachable("Ensembl assembly mapper answered with a body that is not "
+                                "JSON") from e
+    if not isinstance(body, dict):
+        # a 200 whose JSON is not an object (null, a list): not an answer about the region,
+        # so an outage, never "0 placements", which would read as the variant not mapping
+        # and be cached for the life of the process
+        raise SourceUnreachable("Ensembl assembly mapper answered with JSON that is not an "
+                                "object")
+    return list(body.get("mappings") or [])
 
 
 @lru_cache(maxsize=4096)

@@ -420,9 +420,21 @@ verdicts and the correlation are unchanged. The caveat is declared in `datasets.
 ancestry without one. A cross-ancestry pair (FinnGen by Pan-UK Biobank African, say) carries
 the cross-ancestry note instead, since its effect sizes are not compared at all.
 
-**Exit status**: when no source answered for any outcome (every read failed), the run is
-still written, `result.json` has status `error`, and the script exits 3. A null FinnGen API
-answer or a variant absent from a dataset is an answer and exits 0.
+**Exit status**: a classified failure prints one plain line on stderr (after any retry
+warnings the HTTP client logs). A null FinnGen API answer or a variant absent from a dataset
+is an answer and exits 0.
+
+| code | meaning | retry? |
+|---|---|---|
+| 0 | a result was written | |
+| 1 | any other failure (a Python traceback): a defect in this skill | report it |
+| 2 | a bad argument, checked before any network call: argparse's own code; also an unknown `--dataset`, an `--outcomes` entry that is not `dataset_id:outcome_id`, a dataset it names that is not curated or that this run does not read, or an outcome its catalog does not list | no |
+| 3 | an outage: the resolver could not read Open Targets or Ensembl, or Ensembl answered with a body that is not JSON (nothing written); or no source answered for any outcome (every read failed; the run is still written, with `result.json` status `error`, so the outage can be inspected) | yes, later |
+| 4 | the query names no variant that can be resolved: not an rsID or variant id, Open Targets has no such variant, a GRCh37 id that does not map to GRCh38, or reference bases that are not GRCh38's; nothing written | no |
+| 5 | Open Targets refused the resolver's query: a fault in this skill, worth reporting; a retry sends the same query; nothing written | no (report it) |
+
+Run times are measured on the monotonic clock, so a system clock correction during a read
+cannot produce a negative or inflated duration.
 
 **Two views**: by default every biobank is read over its outcomes with a READABLE
 counterpart in another biobank of the same lookup, the ones the replication view compares,

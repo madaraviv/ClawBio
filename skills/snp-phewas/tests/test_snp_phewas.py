@@ -1334,3 +1334,89 @@ def test_the_left_aligner_is_vt_normalize():
     assert left_align("1", 104, "AA", "A", w) == ("1", 101, "CA", "C")
     assert left_align("1", 105, "A", "AA", w) == ("1", 101, "C", "CA")
     assert left_align("1", 106, "T", "G", w) == ("1", 106, "T", "G")  # never moved
+
+
+# --- clocks and the Ensembl reply ------------------------------------------------------------
+
+class _SteppingClock:
+    """A wall clock that steps BACK 100 s on every read (an NTP correction mid-read), next
+    to a monotonic clock that only moves forward."""
+
+    def __init__(self) -> None:
+        self.n = 0
+
+    def time(self) -> float:
+        self.n += 1
+        return 1_000_000.0 - 100.0 * self.n
+
+    def monotonic(self) -> float:
+        self.n += 1
+        return 50.0 + self.n
+
+
+def test_read_timings_survive_a_wall_clock_step_backwards(monkeypatch, offline_kwargs):
+    """The readers timed each read with the wall clock, so a clock step during a read could
+    report a negative duration. Durations come from the monotonic clock: with the wall clock
+    stepping backwards, every elapsed time is still >= 0."""
+    import snp_phewas_sources as sources
+
+    monkeypatch.setattr(sources, "time", _SteppingClock())
+    r = lookup_variant("rs12740374", **offline_kwargs)
+    timed = {d: p["elapsed_s"] for d, p in r.provenance.items() if "elapsed_s" in p}
+    assert set(timed) == {"pan_ukbb_eur", "finngen_r12", "mvp_eur"}, timed
+    # non-negative, and small: a reader that mixed the two clocks would report ~10^6 s
+    assert all(0 <= v < 1000 for v in timed.values()), timed
+
+
+def test_the_skill_times_nothing_with_the_wall_clock():
+    """Every duration in the skill reads the monotonic clock; a `time.time()` that comes back
+    would be a duration again, since timestamps come from `time.gmtime` / `datetime`."""
+    root = Path(__file__).resolve().parents[1]
+    hits = [f"{p.name}:{i}" for p in sorted(root.glob("*.py"))
+            for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+            if "time.time()" in line]
+    assert hits == [], hits
+
+
+def _ensembl_session(body=None, raise_value=False):
+    class Sess:
+        def get(self, url, headers=None, timeout=None):
+            class R:
+                status_code = 200
+
+                def json(_s):
+                    if raise_value:
+                        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+                    return body
+            return R()
+
+    return Sess()
+
+
+def test_ensembl_map_non_json_body_is_an_outage():
+    """An HTTP 200 whose body is not JSON (a maintenance page) was a JSONDecodeError
+    traceback; the Open Targets path already called the same case an outage."""
+    from snp_phewas_tabix import QueryRefused
+    from snp_phewas_variant import ensembl_map
+
+    with pytest.raises(SourceUnreachable, match="not JSON") as exc:
+        ensembl_map("GRCh38", "1", 100, 100, "GRCh37", session=_ensembl_session(raise_value=True))
+    assert not isinstance(exc.value, QueryRefused)
+
+
+@pytest.mark.parametrize("body", [None, [], [{"mapped": {}}], "x", 0])
+def test_ensembl_map_json_that_is_not_an_object_is_an_outage(body):
+    """`null` or `[]` read as "no mappings", so a GRCh37 variant was said not to map and the
+    empty answer was cached; a truthy non-object raised AttributeError."""
+    from snp_phewas_variant import ensembl_map
+
+    with pytest.raises(SourceUnreachable, match="not an object"):
+        ensembl_map("GRCh38", "1", 100, 100, "GRCh37", session=_ensembl_session(body))
+
+
+@pytest.mark.parametrize("body", [{}, {"mappings": []}])
+def test_ensembl_map_an_object_with_no_mappings_is_zero_mappings(body):
+    """The refusal above must not turn a real "does not map" answer into an outage."""
+    from snp_phewas_variant import ensembl_map
+
+    assert ensembl_map("GRCh38", "1", 100, 100, "GRCh37", session=_ensembl_session(body)) == []

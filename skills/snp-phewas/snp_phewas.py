@@ -46,6 +46,7 @@ from clawbio.common.reproducibility import (  # noqa: E402
 import snp_phewas_schema as S  # noqa: E402
 from snp_phewas_catalog import (  # noqa: E402
     ANCESTRY_WORDS,
+    UnknownDatasetError,
     datasets_for_ancestry,
     get_dataset,
     label_in_list,
@@ -71,8 +72,20 @@ from snp_phewas_replication import (  # noqa: E402
     replication_lines,
 )
 from snp_phewas_sources import DEFAULT_WORKERS, FINNGEN_ROUTES  # noqa: E402
-from snp_phewas_tabix import INDEX_STATS, SourceUnreachable, reset_index_stats  # noqa: E402
+from snp_phewas_tabix import (  # noqa: E402
+    INDEX_STATS,
+    QueryRefused,
+    SourceUnreachable,
+    reset_index_stats,
+)
 from snp_phewas_variant import VariantResolutionError  # noqa: E402
+
+# Exit codes (argparse itself exits 2 on a bad argument). An outage is retryable, whether
+# the resolver failed or every read did; a query that names no variant is not, and neither
+# is a query the source refused (a retry sends the same query).
+EXIT_OUTAGE = 3
+EXIT_UNRESOLVED = 4
+EXIT_REFUSED = 5
 
 SKILL_NAME = "snp-phewas"
 VERSION = "0.3.0"
@@ -112,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="run offline on the bundled rs12740374 slices (3 + 3 + 2 outcomes)")
     ap.add_argument("--build", default="GRCh38", choices=("GRCh38", "GRCh37"),
                     help="genome build of a chr_pos_ref_alt variant (default GRCh38)")
-    ap.add_argument("--dataset", default="default",
+    ap.add_argument("--dataset", type=_datasets, default="default",
                     help="comma-separated dataset ids, 'default' (pan_ukbb_eur,finngen_r12,"
                          "mvp_eur) or 'all'; see --list-datasets")
     ap.add_argument("--ancestry", type=str.upper, choices=sorted(ANCESTRY_WORDS),
@@ -124,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "them (the default)")
     ap.add_argument("--quick", action="store_true",
                     help="FinnGen web API only: one request, values only where p < 0.05")
-    ap.add_argument("--outcomes",
+    ap.add_argument("--outcomes", type=_outcomes,
                     help="restrict reads: dataset:outcome_id,... (other outcomes are listed "
                          "as not part of the lookup)")
     ap.add_argument("--finngen-route", default="hybrid", choices=FINNGEN_ROUTES,
@@ -148,15 +161,31 @@ def _variant_from_input(path: str) -> str:
     return lines[0].split()[0]
 
 
-def _parse_outcomes(spec: str | None) -> dict[str, list[str]] | None:
-    if not spec:
-        return None
+def _datasets(text: str) -> str:
+    """`--dataset` checked when the arguments are read, before any network call: an unknown
+    id is argparse's exit 2, not a traceback. The text is returned unchanged."""
+    try:
+        resolve_dataset_ids(text)
+    except UnknownDatasetError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+    return text
+
+
+def _outcomes(text: str) -> dict[str, list[str]]:
+    """`--outcomes` parsed and checked when the arguments are read: each entry is
+    dataset_id:outcome_id, the dataset is curated, and its catalog lists the outcome."""
     out: dict[str, list[str]] = {}
-    for tok in spec.split(","):
+    for tok in text.split(","):
         if ":" not in tok:
-            raise SystemExit(f"--outcomes: {tok!r} is not dataset_id:outcome_id")
-        ds, oid = tok.split(":", 1)
-        out.setdefault(ds.strip(), []).append(oid.strip())
+            raise argparse.ArgumentTypeError(f"each entry is dataset_id:outcome_id; got {tok!r}")
+        ds, oid = (x.strip() for x in tok.split(":", 1))
+        try:
+            get_dataset(ds)
+        except UnknownDatasetError as e:
+            raise argparse.ArgumentTypeError(str(e)) from None
+        if oid not in {o.outcome_id for o in load_outcome_catalog(ds)}:
+            raise argparse.ArgumentTypeError(f"{ds} has no outcome {oid!r}")
+        out.setdefault(ds, []).append(oid)
     return out
 
 
@@ -455,16 +484,14 @@ def _start_message(datasets: str | list[str], all_outcomes: bool, index_cache: s
 
 
 def run(args: argparse.Namespace, argv: list[str]) -> int:
-    t0 = time.time()
+    t0 = time.monotonic()
     out = Path(args.output).expanduser().resolve()
-    (out / "tables").mkdir(parents=True, exist_ok=True)
-    (out / "figures").mkdir(parents=True, exist_ok=True)
     reset_index_stats()
 
     kwargs: dict = dict(build=args.build, workers=args.workers, index_cache=args.index_cache,
                         finngen_route=args.finngen_route,
                         scope="all" if args.all_outcomes else "harmonized",
-                        outcomes=_parse_outcomes(args.outcomes))
+                        outcomes=args.outcomes)
     if args.quick:
         kwargs["finngen_route"] = "api"
     datasets, ancestry_notes = _resolve_datasets(args)
@@ -483,6 +510,9 @@ def run(args: argparse.Namespace, argv: list[str]) -> int:
     if args.quick:
         datasets = "finngen_r12"
     result = lookup_variant(variant, datasets=datasets, **kwargs)
+    # Created only once the variant resolved: a resolver failure writes nothing.
+    (out / "tables").mkdir(parents=True, exist_ok=True)
+    (out / "figures").mkdir(parents=True, exist_ok=True)
 
     produced: list[Path] = []
     rows_tsv = out / "tables" / "snp_phewas_rows.tsv"
@@ -510,7 +540,7 @@ def run(args: argparse.Namespace, argv: list[str]) -> int:
             produced.append(Path(plots.paired_effects(
                 table, str(out / "figures" / "paired_effects.png"))))
 
-    wall = time.time() - t0
+    wall = time.monotonic() - t0
     produced.append(write_report(result, table, out, args, wall, ancestry_notes))
     v = result.variant
     summary = {
@@ -566,7 +596,7 @@ def run(args: argparse.Namespace, argv: list[str]) -> int:
         # not a result, and the exit code says so (as result.json's status does)
         print("snp-phewas: no source answered for this variant (every read failed); this is "
               "an outage, not an absence. Try again later.", file=sys.stderr)
-        return 3
+        return EXIT_OUTAGE
     return 0
 
 
@@ -604,17 +634,38 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--quick reads FinnGen only (one population); drop --ancestry")
     if args.ancestry and args.dataset != "default":
         ap.error("give --ancestry or --dataset, not both")
+    if args.outcomes and not args.demo:
+        # An --outcomes entry for a dataset this run does not read was ignored by the lookup,
+        # so the answer covered fewer datasets than asked without saying so; refused here.
+        ids = (["finngen_r12"] if args.quick else
+               datasets_for_ancestry(args.ancestry)[0] if args.ancestry else
+               resolve_dataset_ids(args.dataset))
+        extra = sorted(set(args.outcomes) - set(ids))
+        if extra:
+            ap.error(f"argument --outcomes: {extra[0]} is not one of the datasets this run "
+                     f"reads ({', '.join(ids)}); add it to --dataset or leave it out")
+    query = args.variant or ("the demo variant" if args.demo
+                             else _variant_from_input(args.input))
     try:
-        if not args.demo:
-            resolve_dataset_ids(args.dataset)
         return run(args, raw)
+    except QueryRefused:
+        # a SourceUnreachable subclass, so it is caught first: the source answered and refused
+        print(f"snp-phewas: {query} could not be resolved: Open Targets refused the query. "
+              f"This is a fault in this tool, not in your query, and a retry will not help; "
+              f"please report it. Nothing was written.", file=sys.stderr)
+        return EXIT_REFUSED
+    except SourceUnreachable:
+        # the resolver could not read its source: one plain line and the outage code, not
+        # a traceback (a dataset that cannot be read is a row, not an exception)
+        print(f"snp-phewas: {query} could not be resolved because the source it reads could "
+              f"not be reached (Open Targets for an rsID, Ensembl for a GRCh37 position); "
+              f"this is an outage, not an absence, and nothing was written. Try again later.",
+              file=sys.stderr)
+        return EXIT_OUTAGE
     except VariantResolutionError as e:
-        print(f"snp-phewas: {e}", file=sys.stderr)
-        return 2
-    except SourceUnreachable as e:
-        print(f"snp-phewas: a source could not be reached ({e}); this is an outage, "
-              f"not an absence. Try again later.", file=sys.stderr)
-        return 3
+        print(f"snp-phewas: {query} names no variant we can look up: {e}. Nothing was "
+              f"written.", file=sys.stderr)
+        return EXIT_UNRESOLVED
 
 
 if __name__ == "__main__":  # pragma: no cover

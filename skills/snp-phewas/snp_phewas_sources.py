@@ -334,12 +334,12 @@ def run_pool(fn: Callable[[OutcomeSpec], RawRecord], outcomes: list[OutcomeSpec]
     out: dict[str, RawRecord] = {}
     n = len(outcomes)
     step = max(1, n // 20)
-    t0 = time.time()
+    t0 = time.monotonic()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
         for i, (o, rec) in enumerate(zip(outcomes, ex.map(fn, outcomes)), 1):
             out[o.outcome_id] = rec
             if i % step == 0 or i == n:
-                log.info("%s: %d/%d outcomes read (%.0fs)", label, i, n, time.time() - t0)
+                log.info("%s: %d/%d outcomes read (%.0fs)", label, i, n, time.monotonic() - t0)
     return out
 
 
@@ -362,11 +362,11 @@ class PanUkbbReader:
         return read_outcome_file(data, idx, self.cols, tgt, index_cache=self.index_cache)
 
     def read(self, outcomes: list[OutcomeSpec], tgt: Placement) -> tuple[dict[str, RawRecord], dict]:
-        t0 = time.time()
+        t0 = time.monotonic()
         recs = run_pool(lambda o: self.read_outcome(o, tgt), outcomes, self.workers,
                         self.spec.dataset_id)
         return recs, {"route": "tabix", "n_files_read": len(outcomes),
-                      "elapsed_s": round(time.time() - t0, 2), "workers": self.workers}
+                      "elapsed_s": round(time.monotonic() - t0, 2), "workers": self.workers}
 
 
 def not_readable_record(o: OutcomeSpec) -> RawRecord | None:
@@ -407,13 +407,13 @@ class MvpReader:
         return read_outcome_file(data, idx, mvp_columns_for, tgt, index_cache=self.index_cache)
 
     def read(self, outcomes: list[OutcomeSpec], tgt: Placement) -> tuple[dict[str, RawRecord], dict]:
-        t0 = time.time()
+        t0 = time.monotonic()
         recs = run_pool(lambda o: self.read_outcome(o, tgt), outcomes, self.workers,
                         self.spec.dataset_id)
         n_files = sum(1 for o in outcomes if o.access_status == "harmonised" and o.filename)
         return recs, {"route": "tabix", "n_files_read": n_files,
                       "n_not_readable": len(outcomes) - n_files,
-                      "elapsed_s": round(time.time() - t0, 2), "workers": self.workers}
+                      "elapsed_s": round(time.monotonic() - t0, 2), "workers": self.workers}
 
 
 FINNGEN_ROUTES = ("hybrid", "api", "tabix")
@@ -458,11 +458,11 @@ class FinnGenReader:
         `catalog_ids` is the dataset's full catalog (defaults to `outcomes`), so a result
         for an outcome that was merely not queried is not mistaken for an uncatalogued one.
         """
-        t0 = time.time()
+        t0 = time.monotonic()
         if self.route == "tabix":
             recs = self._tabix(outcomes, tgt)
             return recs, {"route": "tabix", "n_files_read": len(outcomes),
-                          "elapsed_s": round(time.time() - t0, 2)}, []
+                          "elapsed_s": round(time.monotonic() - t0, 2)}, []
         cat = catalog_ids or {o.outcome_id for o in outcomes}
         recs, prov, uncat = self._read_api(outcomes, tgt, t0, cat)
         if self.route == "api":
@@ -471,7 +471,7 @@ class FinnGenReader:
             # The files sit on another host: an API outage is no reason to read nothing.
             recs = self._tabix(outcomes, tgt)
             prov.update(route="tabix", n_files_read=len(outcomes), api_outage_fallback=True,
-                        elapsed_s=round(time.time() - t0, 2))
+                        elapsed_s=round(time.monotonic() - t0, 2))
             return recs, prov, uncat
         if prov.get("api_absent"):
             # Confirm an API "no such variant" against one endpoint file before trusting it.
@@ -483,13 +483,13 @@ class FinnGenReader:
             else:
                 prov["n_files_read"] = 1 if outcomes else 0
                 prov["route"] = "api+tabix"
-            prov["elapsed_s"] = round(time.time() - t0, 2)
+            prov["elapsed_s"] = round(time.monotonic() - t0, 2)
             return recs, prov, uncat
         fill = [o for o in outcomes if recs[o.outcome_id].status in (S.ST_API_CENSORED, S.ST_ABSENT)]
         filled = self._tabix(fill, tgt)
         recs.update(filled)
         prov.update(route="api+tabix", n_files_read=len(fill),
-                    elapsed_s=round(time.time() - t0, 2))
+                    elapsed_s=round(time.monotonic() - t0, 2))
         return recs, prov, uncat
 
     def _read_api(self, outcomes: list[OutcomeSpec], tgt: Placement, t0: float,
@@ -509,9 +509,9 @@ class FinnGenReader:
                     for o in outcomes}
             return recs, {"route": "api", "n_requests": n_req, "api_outage": True,
                           "api_error": str(e),
-                          "elapsed_s": round(time.time() - t0, 2)}, []
+                          "elapsed_s": round(time.monotonic() - t0, 2)}, []
         prov: dict[str, Any] = {"route": "api", "n_requests": n_req,
-                                "elapsed_s": round(time.time() - t0, 2)}
+                                "elapsed_s": round(time.monotonic() - t0, 2)}
         if payload is None:
             prov["api_absent"] = True
             return ({o.outcome_id: RawRecord(S.ST_ABSENT, route="api") for o in outcomes},
