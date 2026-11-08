@@ -231,7 +231,8 @@ def lookup_variant(
     each dataset is read over the outcomes with a READABLE counterpart in another family's
     dataset of the same lookup (`matched_outcome_ids`), the ones the replication view
     compares. Counted on the committed crosswalk: Pan-UK Biobank EUR 589 and FinnGen 622
-    with those two; with MVP EUR added (the default three), 1,156 / 622 / 727. The SAME rule
+    with those two; with MVP EUR added (the default three), 1,363 / 622 / 981 on the
+    2026-10-31 MVP catalog. The SAME rule
     in every biobank: FinnGen's one API request returns every endpoint, and the ones outside
     the set are not kept. Said in the notes. `scope="all"` reads every outcome.
     """

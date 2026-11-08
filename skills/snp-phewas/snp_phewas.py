@@ -88,7 +88,7 @@ EXIT_UNRESOLVED = 4
 EXIT_REFUSED = 5
 
 SKILL_NAME = "snp-phewas"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 SCRIPT_REL = "skills/snp-phewas/snp_phewas.py"
 PIP_DEPS = ["requests>=2.28", "matplotlib>=3.7", "numpy>=1.24", "pyyaml>=6.0"]
 TOP_N = 12
