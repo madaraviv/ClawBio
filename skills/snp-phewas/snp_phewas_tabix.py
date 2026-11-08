@@ -80,8 +80,17 @@ class SourceUnreachable(ConnectionError):
 
     Never means the variant is absent. A ConnectionError subclass so a transport-failure
     `isinstance` check recognizes it, and its own type so it cannot be coerced into an
-    empty result by a caller that only checks for emptiness.
+    empty result by a caller that only checks for emptiness. One subclass is not an outage:
+    `QueryRefused`, a source that answered and refused the request, which a caller that
+    tells the two apart catches first.
     """
+
+
+class QueryRefused(SourceUnreachable):
+    """The source answered and refused our request (Open Targets rejected the query). A retry
+    repeats it, so it is our defect, never an outage. A subclass of `SourceUnreachable` so a
+    caller that knows only that class still catches it; a caller that tells them apart catches
+    this first."""
 
 
 class SourceFileMissing(FileNotFoundError):

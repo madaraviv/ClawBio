@@ -52,11 +52,40 @@ class OpenTargetsError(RuntimeError):
     """The Open Targets API could not answer (network, HTTP error, GraphQL error, bad body)."""
 
 
+class OpenTargetsQueryRefused(OpenTargetsError):
+    """Open Targets answered and refused OUR request: HTTP 400 / 413, or a GraphQL `errors`
+    body carrying its message for an argument it refuses. The same request gets the same
+    answer, so it is a defect in this client, never an outage worth retrying."""
+
+
+#: The statuses that are a verdict on our request (measured against the live API
+#: 2026-10-28: an unknown field, a wrong or missing variable type and a syntax error each
+#: came back 400, 5 of 5; an oversized request 413). Any other 4xx stays "could not answer".
+QUERY_REFUSED_STATUSES = frozenset({400, 413})
+
+#: Open Targets' messages for a request it refuses, each measured against the live API
+#: 2026-10-28 (HTTP 200 with `errors`, `data: null`, no machine-readable code): an argument
+#: value it refuses, and too many terms in one request.
+_REFUSAL_RES = (
+    re.compile(r"^Argument '[^']*' has invalid value"),
+    re.compile(r"^Invalid request\. Number of requested terms must not exceed"),
+)
+
+
+def _refuses_our_query(errors: Any) -> bool:
+    """True when ANY GraphQL error refuses something we sent."""
+    return isinstance(errors, list) and any(
+        isinstance(e, dict) and isinstance(e.get("message"), str)
+        and any(rx.match(e["message"]) for rx in _REFUSAL_RES)
+        for e in errors)
+
+
 def _post(query: str, variables: dict[str, Any], *, endpoint: str = OT_GRAPHQL,
           session: requests.Session | None = None,
           timeout_s: float = DEFAULT_TIMEOUT_S) -> dict[str, Any]:
     """The reply's `data`, or `OpenTargetsError`. A reply with no data (a GraphQL failure
-    can arrive as HTTP 200 with `"data": null`) is an outage, never an empty answer."""
+    can arrive as HTTP 200 with `"data": null`) is an outage, never an empty answer; a
+    request Open Targets refused is `OpenTargetsQueryRefused`."""
     sess = session or requests.Session()
     body = {"query": query, "variables": variables}
     last: Exception | None = None
@@ -72,14 +101,20 @@ def _post(query: str, variables: dict[str, Any], *, endpoint: str = OT_GRAPHQL,
         if r.status_code in (429, 500, 502, 503, 504):
             last = OpenTargetsError(f"HTTP {r.status_code}")
             continue
+        if r.status_code in QUERY_REFUSED_STATUSES:
+            raise OpenTargetsQueryRefused(f"HTTP {r.status_code}")
         if r.status_code != 200:
             raise OpenTargetsError(f"HTTP {r.status_code}")
         try:
             payload = r.json()
         except ValueError as e:
             raise OpenTargetsError("non-JSON body") from e
+        if not isinstance(payload, dict):
+            raise OpenTargetsError("the reply is not a GraphQL object")
         if payload.get("errors"):
-            raise OpenTargetsError("GraphQL error: " + str(payload["errors"])[:200])
+            kind = (OpenTargetsQueryRefused if _refuses_our_query(payload["errors"])
+                    else OpenTargetsError)
+            raise kind("GraphQL error: " + str(payload["errors"])[:200])
         if payload.get("data") is None:
             raise OpenTargetsError("the reply carried no data")
         return payload["data"]

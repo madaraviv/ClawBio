@@ -922,15 +922,16 @@ def test_resolve_variant_ranks_with_the_weight_and_says_why_only_when_it_ranked(
 class _StubOT:
     """`snp_phewas_ot_resolver._post` scripted by query."""
 
-    def __init__(self, search=None, weights=None, fail=None):
+    def __init__(self, search=None, weights=None, fail=None, exc=None):
         self.search, self.weights, self.fail = search or [], weights or {}, fail
+        self.exc = exc
 
     def __call__(self, query, variables, **_kw):
         import snp_phewas_ot_resolver as R
 
         kind = "weight" if query is R.VARIANT_GWAS_WEIGHT_QUERY else "search"
         if self.fail == kind:
-            raise R.OpenTargetsError("HTTP 503")
+            raise (self.exc or R.OpenTargetsError("HTTP 503"))
         if kind == "search":
             # an entry is an id (carrying the queried rsID) or (id, the rsID it carries)
             rs = variables["queryString"]
@@ -998,6 +999,119 @@ def test_the_open_targets_resolver_ranks_and_names_the_call_that_failed(monkeypa
     v = resolve_variant("rs7903146")
     assert v.grch38.variant_id == "10_112998590_C_G"
     assert "GWAS weights could not be read just now" in v.resolution_note
+
+
+_RS7903146_IDS = ["10_112998590_C_G", "10_112998590_C_T"]
+_RS7903146_WEIGHTS = {"10_112998590_C_T": _weight_reply(888, {"nfe_adj": 0.29})}
+
+
+def _resolve_rs7903146(monkeypatch, **stub):
+    import snp_phewas_ot_resolver as R
+    from snp_phewas_variant import resolve_variant
+
+    monkeypatch.setattr(R, "_post",
+                        _StubOT(search=_RS7903146_IDS, weights=_RS7903146_WEIGHTS, **stub))
+    return resolve_variant("rs7903146")
+
+
+def test_a_search_open_targets_refuses_is_a_refusal_not_an_outage(monkeypatch):
+    """A refused search is refused again on every retry, so it is `QueryRefused`; still a
+    `SourceUnreachable`, so a caller that knows only that class catches it."""
+    import snp_phewas_ot_resolver as R
+    from snp_phewas_tabix import QueryRefused
+
+    with pytest.raises(QueryRefused, match="variant search") as err:
+        _resolve_rs7903146(monkeypatch, fail="search", exc=R.OpenTargetsQueryRefused("HTTP 400"))
+    assert isinstance(err.value, SourceUnreachable)
+    # An outage stays an outage, not a refusal.
+    with pytest.raises(SourceUnreachable) as err:
+        _resolve_rs7903146(monkeypatch, fail="search", exc=R.OpenTargetsError("HTTP 503"))
+    assert not isinstance(err.value, QueryRefused)
+
+
+def test_a_refused_weight_query_is_said_as_refused_and_the_allele_is_provisional(monkeypatch):
+    """The weights refused is not "just now" (a retry repeats it), and the allele the search
+    listed first is a stopgap, so no variant id is offered to remember."""
+    import snp_phewas_ot_resolver as R
+    from snp_phewas_variant import ALLELE_WEIGHTS_REFUSED
+
+    v = _resolve_rs7903146(monkeypatch, fail="weight", exc=R.OpenTargetsQueryRefused("HTTP 400"))
+    assert v.allele_choice == ALLELE_WEIGHTS_REFUSED
+    assert "asking again will not help" in v.resolution_note
+    assert "just now" not in v.resolution_note
+    assert v.variant_id_grch38 == "10_112998590_C_G"
+    assert v.anchor_variant_id is None
+
+
+def test_weights_out_of_reach_say_just_now_and_the_allele_is_provisional(monkeypatch):
+    import snp_phewas_ot_resolver as R
+    from snp_phewas_variant import ALLELE_WEIGHTS_UNAVAILABLE
+
+    v = _resolve_rs7903146(monkeypatch, fail="weight", exc=R.OpenTargetsError("HTTP 503"))
+    assert v.allele_choice == ALLELE_WEIGHTS_UNAVAILABLE
+    assert "could not be read just now" in v.resolution_note
+    assert "asking again" not in v.resolution_note
+    assert v.variant_id_grch38 == "10_112998590_C_G"
+    assert v.anchor_variant_id is None
+
+
+def test_a_ranked_allele_is_the_anchor_and_its_clause_is_a_field(monkeypatch):
+    """The ranked allele is remembered; `allele_note` is exactly the clause the sentence ends
+    with, so a surface that prints only that clause reads the field."""
+    from snp_phewas_variant import ALLELE_RANKED
+
+    v = _resolve_rs7903146(monkeypatch)
+    assert v.allele_choice == ALLELE_RANKED
+    assert v.anchor_variant_id == v.variant_id_grch38 == "10_112998590_C_T"
+    assert v.allele_note and v.allele_note.startswith("rs7903146 also names 1 other allele(s)")
+    assert v.resolution_note.endswith("; " + v.allele_note)
+
+
+def test_one_allele_has_no_clause_and_is_its_own_anchor():
+    from snp_phewas_variant import ALLELE_ONLY, resolve_variant
+
+    v = resolve_variant("rs12740374", rsid_resolver=lambda _q: ["1_109274968_G_T"],
+                        allele_weight=lambda _v: (_ for _ in ()).throw(AssertionError("weighed")))
+    assert v.allele_note is None and v.allele_choice == ALLELE_ONLY
+    assert v.anchor_variant_id == v.variant_id_grch38 == "1_109274968_G_T"
+    typed = resolve_variant("1_109274968_G_T")
+    assert typed.allele_note is None and typed.anchor_variant_id == "1_109274968_G_T"
+
+
+def test_an_injected_resolver_without_a_weight_is_read_in_its_order_and_remembered():
+    from snp_phewas_variant import ALLELE_SOURCE_ORDER, resolve_variant
+
+    v = resolve_variant("rs7903146", rsid_resolver=lambda _q: list(_RS7903146_IDS))
+    assert v.allele_choice == ALLELE_SOURCE_ORDER
+    assert v.anchor_variant_id == "10_112998590_C_G"
+
+
+@pytest.mark.parametrize("status,body,refused", [
+    (400, None, True), (413, None, True), (503, None, False),
+    (200, {"errors": [{"message": "Argument 'size' has invalid value 100000."}], "data": None},
+     True),
+    (200, {"errors": [{"message": "Internal server error"}], "data": None}, False),
+    (200, [], False),
+])
+def test_open_targets_says_whose_fault_a_failed_reply_is(monkeypatch, status, body, refused):
+    """HTTP 400 / 413 and Open Targets' own refusal messages are our request refused (the
+    same request gets the same answer); every other failure is the service's."""
+    import snp_phewas_ot_resolver as R
+
+    class Resp:
+        status_code = status
+
+        def json(self):
+            return body
+
+    class Sess:
+        def post(self, *a, **k):
+            return Resp()
+
+    monkeypatch.setattr(R, "RETRY_BACKOFF_S", 0.0)
+    with pytest.raises(R.OpenTargetsError) as err:
+        R.search_variant_ids("rs12740374", session=Sess())
+    assert isinstance(err.value, R.OpenTargetsQueryRefused) is refused
 
 
 def test_lookup_passes_an_injected_allele_weight_through(offline_kwargs):

@@ -185,7 +185,10 @@ biobanks and nothing else. It does not fine-map, colocalize, run MR, or search l
 1. **Resolve** (prescriptive): rsID to GRCh38 `chr_pos_ref_alt` with Open Targets; the
    effect allele is that id's alternative allele. Several alleles at one position: rank by
    GWAS credible sets, then gnomAD frequency, then search order. If the weight query fails,
-   the search's first id is read and the report says the weights could not be read.
+   the search's first id is read and the report says the weights could not be read: "just
+   now" for an outage, "asking again will not help" when Open Targets refused the query
+   (HTTP 400 / 413, or its own refusal message; a defect in this skill, never an outage).
+   Either way the allele is provisional (`allele_choice`, and `anchor_variant_id` is None).
 2. **Place** (prescriptive): map to GRCh37 with the Ensembl assembly mapper for Pan-UK
    Biobank. Zero or several placements, a length change, or an indel on the opposite
    strand is `build_unmappable`; an Ensembl outage is `dataset_unreachable`.

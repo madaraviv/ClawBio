@@ -4,7 +4,12 @@
   (`snp_phewas_ot_resolver`). When the rsID names several alleles at one position, the one
   with the most GWAS credible sets is read, then the most frequent in gnomAD, then the
   search's first; the answer names the others and says what separated the chosen allele
-  from the runner-up (`rank_alleles`).
+  from the runner-up (`rank_alleles`). `allele_choice` records how the allele was chosen;
+  when the weights that rank them could not be read (an outage) or were refused, the choice
+  is provisional and `anchor_variant_id` is None, so a caller that remembers "this variant"
+  across questions remembers the rsID only and ranks again next time.
+* A refused Open Targets query is `QueryRefused` (a `SourceUnreachable`): a retry repeats
+  it, so it is never said as an outage.
 * A typed `chr_pos_ref_alt` (`_`, `:` or `-` separated, optional `chr`) passes through;
   with `build="GRCh37"` it is first mapped to GRCh38.
 * GRCh38 -> GRCh37 for Pan-UKBB: the Ensembl REST assembly mapper
@@ -23,7 +28,7 @@ from typing import Any, Callable
 
 import requests
 
-from snp_phewas_tabix import SourceUnreachable, get_with_retry
+from snp_phewas_tabix import QueryRefused, SourceUnreachable, get_with_retry
 from snp_phewas_orient import complement
 
 
@@ -65,16 +70,46 @@ class Placement:
         return f"{self.chrom}_{self.pos}_{self.ref}_{self.alt}"
 
 
+#: How the allele of a resolved variant was chosen (`ResolvedVariant.allele_choice`).
+#: One allele was named: a typed id, or an rsID with one allele at its position.
+ALLELE_ONLY = "only_allele"
+#: Several alleles, ranked by their Open Targets GWAS weights (`rank_alleles`).
+ALLELE_RANKED = "ranked_by_gwas_weight"
+#: Several alleles, read in the injected resolver's own order (no weight was given).
+ALLELE_SOURCE_ORDER = "source_order"
+#: Several alleles; the weights could not be read (an outage): the search's first, for now.
+ALLELE_WEIGHTS_UNAVAILABLE = "weights_unavailable"
+#: Several alleles; Open Targets refused the weight query: the search's first, for now.
+ALLELE_WEIGHTS_REFUSED = "weights_refused"
+#: The choices that are provisional: the allele a ranking would have chosen is unknown.
+PROVISIONAL_ALLELE_CHOICES = frozenset({ALLELE_WEIGHTS_UNAVAILABLE, ALLELE_WEIGHTS_REFUSED})
+
+
 @dataclass(frozen=True)
 class ResolvedVariant:
     query: str
     grch38: Placement
     rs_id: str | None
     resolution_note: str
+    #: The clause of `resolution_note` naming the rsID's other alleles at this position (the
+    #: part after "; "), or None when it names one allele. A field, so a surface that prints
+    #: only this clause reads it rather than splitting the sentence.
+    allele_note: str | None = None
+    allele_choice: str = ALLELE_ONLY
 
     @property
     def variant_id_grch38(self) -> str:
         return self.grch38.variant_id
+
+    @property
+    def anchor_variant_id(self) -> str | None:
+        """The variant id a caller may remember as "this variant", or None when the allele
+        was a provisional pick (the weights that rank the rsID's alleles could not be read):
+        the rsID alone is remembered then, so the next lookup ranks again rather than
+        reading a stopgap choice as one the user made."""
+        if self.allele_choice in PROVISIONAL_ALLELE_CHOICES:
+            return None
+        return self.variant_id_grch38
 
 
 def parse_variant_id(s: str) -> tuple[str, int, str, str] | None:
@@ -187,14 +222,23 @@ def resolve_variant(query: str, *, build: str = "GRCh38",
         if not vids:
             raise VariantResolutionError(f"Open Targets has no variant for {q}")
         why = None
+        choice = ALLELE_SOURCE_ORDER
         if allele_weight:
             try:
                 vids, why = rank_alleles(vids, allele_weight)
+                choice = ALLELE_RANKED
+            except QueryRefused:
+                # Refused, not unreachable: a retry repeats it, so never "just now".
+                why = ("the first Open Targets lists; the alleles' GWAS weights could not be "
+                       "read, because a lookup failed on our side, and asking again will not "
+                       "help")
+                choice = ALLELE_WEIGHTS_REFUSED
             except SourceUnreachable:
                 # the variant is known; only the tie-break is missing. Read the search's first
                 # id and say so, rather than fail a lookup that named its variant.
                 why = ("the first Open Targets lists; the alleles' GWAS weights could not be "
                        "read just now")
+                choice = ALLELE_WEIGHTS_UNAVAILABLE
         vid = vids[0]
         parsed = parse_variant_id(vid)
         if parsed is None:
@@ -203,12 +247,18 @@ def resolve_variant(query: str, *, build: str = "GRCh38",
         p = Placement("GRCh38", chrom, pos, ref, alt)
         note = f"{q} is {p.variant_id} (GRCh38), resolved through Open Targets"
         others = [v for v in vids[1:] if (parse_variant_id(v) or (None, None))[:2] == (chrom, pos)]
+        allele_note = None
         if others:
-            note += (f"; {q} also names {len(others)} other allele(s) at this position "
-                     f"({', '.join(others)}), and this answer is for {p.variant_id} only"
-                     + (f", {why}" if why else "") + ". Run with --variant set to one of "
-                     "those ids to look it up instead")
-        return ResolvedVariant(q, p, q.lower(), note)
+            allele_note = (f"{q} also names {len(others)} other allele(s) at this position "
+                           f"({', '.join(others)}), and this answer is for {p.variant_id} only"
+                           + (f", {why}" if why else "") + ". Run with --variant set to one "
+                           "of those ids to look it up instead")
+            note += "; " + allele_note
+        else:
+            # One allele at this position: nothing was chosen, so nothing is provisional.
+            choice = ALLELE_ONLY
+        return ResolvedVariant(q, p, q.lower(), note, allele_note=allele_note,
+                               allele_choice=choice)
     raise VariantResolutionError(
         f"{query!r} is neither an rsID (rs123) nor a variant id (1_109274968_G_T)"
     )
@@ -248,21 +298,29 @@ def rank_alleles(ids: list[str], weight: Callable[[str], tuple[int, float]]
 
 def _ot_resolver_and_weight() -> tuple[Callable[[str], list[str]],
                                        Callable[[str], tuple[int, float]]]:
-    """The Open Targets rsID search and allele weight, errors classified: an outage is
-    `SourceUnreachable`, named by the call that failed (an empty search is "no variant",
-    raised by the caller)."""
-    from snp_phewas_ot_resolver import OpenTargetsError, gwas_weight, search_variant_ids
+    """The Open Targets rsID search and allele weight, errors classified: a query Open
+    Targets refused is `QueryRefused`; an outage is `SourceUnreachable`; each named by the
+    call that failed (an empty search is "no variant", raised by the caller)."""
+    from snp_phewas_ot_resolver import (
+        OpenTargetsError,
+        OpenTargetsQueryRefused,
+        gwas_weight,
+        search_variant_ids,
+    )
+
+    def _failed(e: Exception) -> type[SourceUnreachable]:
+        return QueryRefused if isinstance(e, OpenTargetsQueryRefused) else SourceUnreachable
 
     def _resolve(rsid: str) -> list[str]:
         try:
             return search_variant_ids(rsid)
         except OpenTargetsError as e:
-            raise SourceUnreachable(f"Open Targets variant search: {e}") from e
+            raise _failed(e)(f"Open Targets variant search: {e}") from e
 
     def _weight(variant_id: str) -> tuple[int, float]:
         try:
             return gwas_weight(variant_id)
         except OpenTargetsError as e:
-            raise SourceUnreachable(f"Open Targets allele weight query: {e}") from e
+            raise _failed(e)(f"Open Targets allele weight query: {e}") from e
 
     return _resolve, _weight
