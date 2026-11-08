@@ -1029,3 +1029,18 @@ def test_an_rsid_never_resolves_to_a_prefix_match(monkeypatch):
     monkeypatch.setattr(R, "_post", _StubOT(search=[("20_7114084_C_T", "rs73896906")]))
     with pytest.raises(VariantResolutionError, match="no variant for rs7"):
         resolve_variant("rs7")
+
+
+def test_the_rows_tsv_names_whose_participants_the_eaf_is(tmp_path):
+    """`eaf` is the biobank's own participants' frequency, never a reference population; the
+    TSV says whose in `eaf_cohort` (an unknown dataset id falls back to itself)."""
+    import csv
+
+    rows, _ = _good_rows()
+    path = tmp_path / "rows.tsv"
+    S.write_rows_tsv(rows, str(path))
+    with open(path, encoding="utf-8") as fh:
+        got = list(csv.DictReader(fh, delimiter="\t"))
+    assert got and {r["eaf_cohort"] for r in got} == {S.eaf_cohort_label(rows[0].dataset_id)}
+    assert S.eaf_cohort_label("finngen_r12") == "FinnGen R12 (Finnish)"
+    assert S.eaf_cohort_label("not_a_dataset") == "not_a_dataset"

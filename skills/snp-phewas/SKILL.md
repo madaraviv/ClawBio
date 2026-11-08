@@ -314,7 +314,9 @@ The FinnGen API's `maf` is that same alt-allele frequency, not a folded minor-al
 frequency: on 56 variants whose alt allele is the major one (file `af_alt` 0.55 to 0.99,
 drawn from eight chromosomes), all 8,272 non-null per-endpoint `maf` values were above 0.5,
 none of 2,489 on 16 alt-minor variants was, and where the API filled the same endpoint
-`maf` equaled the file's `af_alt` to the last digit (measured 2026-11-01).
+`maf` equaled the file's `af_alt` to the last digit (measured 2026-11-01). Every one is the
+dataset's own participants' frequency, never a reference population's: the rows TSV says
+whose in its `eaf_cohort` column (the dataset's label).
 
 **Reading the GWAS Catalog harmonized files** (MVP): lines end in CRLF (stripped from the
 header and each record). The file is reference-anchored with ref = `other_allele`, alt =
@@ -488,6 +490,8 @@ output_directory/
 ├── result.json                    # Counts, status histograms, verdict counts, provenance
 ├── tables/
 │   ├── snp_phewas_rows.tsv        # One row per catalog outcome per dataset, every status
+│   │                              #   (+ status_label, and eaf_cohort: whose participants
+│   │                              #   eaf was measured in, never a reference population)
 │   ├── excluded.tsv               # Rows with no value, each with its reason
 │   ├── replication.tsv            # Harmonized outcomes, a verdict per pair, three-way class
 │   └── uncataloged.tsv            # (optional) source outcomes outside the published catalog

@@ -254,13 +254,36 @@ def _cell(v: object) -> str:
     return str(v)
 
 
+#: The columns the rows TSV writes after `ROW_COLUMNS`: the status in words, and whose
+#: participants `eaf` was measured in. A bundle written before `eaf_cohort` existed carries
+#: only the first (`LEGACY_TSV_EXTRA_COLUMNS`); readers accept both.
+TSV_EXTRA_COLUMNS: tuple[str, ...] = ("status_label", "eaf_cohort")
+LEGACY_TSV_EXTRA_COLUMNS: tuple[str, ...] = ("status_label",)
+
+
+def eaf_cohort_label(dataset_id: str) -> str:
+    """Whose effect-allele frequency a row's `eaf` is: the dataset's own participants (its
+    catalog label), never a reference population."""
+    from snp_phewas_catalog import UnknownDatasetError, get_dataset
+
+    try:
+        return get_dataset(dataset_id).label
+    except UnknownDatasetError:
+        return dataset_id
+
+
 def write_rows_tsv(rows: Sequence[OutcomeRow], path: str) -> str:
-    """Write rows (all statuses) with a plain-language status label column."""
+    """Write rows (all statuses) with a plain-language status label column and an
+    `eaf_cohort` column naming whose participants the `eaf` was measured in."""
     assert_source_ids_present(rows)
+    cohorts: dict[str, str] = {}
     with open(path, "w", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh, delimiter="\t", lineterminator="\n")
-        w.writerow([*ROW_COLUMNS, "status_label"])
+        w.writerow([*ROW_COLUMNS, *TSV_EXTRA_COLUMNS])
         for r in rows:
             d = asdict(r)
-            w.writerow([*(_cell(d[c]) for c in ROW_COLUMNS), r.status_label])
+            if r.dataset_id not in cohorts:
+                cohorts[r.dataset_id] = eaf_cohort_label(r.dataset_id)
+            w.writerow([*(_cell(d[c]) for c in ROW_COLUMNS), r.status_label,
+                        cohorts[r.dataset_id]])
     return path

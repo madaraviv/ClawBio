@@ -14,7 +14,7 @@ flowchart TD
     FG_TBX --> O
     PAN --> O["orient on the effect allele<br/>swap = re-sign; palindromic swap = withhold"]
     MVP --> O
-    O --> ROWS["one row per catalog outcome per dataset"]
+    O --> ROWS["one row per catalog outcome per dataset<br/>eaf_cohort: whose participants eaf was measured in"]
     ROWS --> P{"rows == catalog as sets?"}
     P -->|no| X["fail loudly"]
     P -->|yes| H["outcome crosswalk<br/>ICD-10 block / phecode / FinnGen published match /<br/>reviewed MVP measurement match"]
