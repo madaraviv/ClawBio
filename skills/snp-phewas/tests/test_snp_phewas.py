@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 from collections import Counter
+from pathlib import Path
 import struct
 import zlib
 
@@ -1158,3 +1159,178 @@ def test_the_rows_tsv_names_whose_participants_the_eaf_is(tmp_path):
     assert got and {r["eaf_cohort"] for r in got} == {S.eaf_cohort_label(rows[0].dataset_id)}
     assert S.eaf_cohort_label("finngen_r12") == "FinnGen R12 (Finnish)"
     assert S.eaf_cohort_label("not_a_dataset") == "not_a_dataset"
+
+
+# --- a typed insertion or deletion is left-aligned ------------------------------------------
+# GRCh38 windows recorded live from Ensembl's /sequence/region on 2026-11-06
+# (tests/fixtures/reference). CFTR F508del is 7_117559590_ATCT_A in gnomAD and Open Targets;
+# 7_117559591_TCTT_T is the same deletion written right-aligned, the form Ensembl's variant
+# recoder answers.
+
+F508_TYPED = "7_117559591_TCTT_T"
+F508_ALIGNED = "7_117559590_ATCT_A"
+_REF_DIR = Path(__file__).parent / "fixtures" / "reference"
+
+
+def _window(name):
+    import json
+
+    from snp_phewas_normalize import ReferenceWindow
+
+    rec = json.loads((_REF_DIR / f"{name}.json").read_text())
+    assert rec["status"] == 200, rec
+    _, chrom, start, _end = name.split("_")
+    return ReferenceWindow(chrom, int(start), rec["body"].strip().upper())
+
+
+def _reference():
+    """A `reference(chrom, pos, ref_len)` serving the recorded windows, keyed as the live
+    reader keys its requests; any other window fails the test, so none reaches the network."""
+    from snp_phewas_normalize import window_bounds
+
+    table = {(w.chrom, w.start, w.end): w for w in map(_window, (
+        "sequence_7_117557001_117560000", "sequence_17_43055001_43058000"))}
+
+    def read(chrom, pos, ref_len):
+        key = (chrom, *window_bounds(pos, ref_len))
+        assert key in table, f"no recorded window {key}"
+        return table[key]
+
+    return read
+
+
+def test_a_typed_right_aligned_deletion_is_read_under_its_left_aligned_id():
+    """A typed id was placed as typed, so a right-aligned spelling queried every source under
+    an id they may not hold. It is now left-aligned, and the answer says so."""
+    from snp_phewas_variant import ALLELE_ONLY, resolve_variant
+
+    v = resolve_variant(F508_TYPED, reference=_reference())
+    assert v.variant_id_grch38 == F508_ALIGNED
+    assert v.query == F508_TYPED and v.rs_id is None
+    assert v.allele_choice == ALLELE_ONLY and v.allele_note is None
+    assert v.anchor_variant_id == F508_ALIGNED
+    assert v.alignment_note == (
+        f"{F508_TYPED}, as typed, is the same deletion as {F508_ALIGNED}, the left-aligned "
+        "form gnomAD uses, so this answer is for that id")
+    assert v.resolution_note == (
+        f"variant {F508_ALIGNED}, read as GRCh38 (the default; pass --build GRCh37 for a "
+        f"GRCh37 position); {v.alignment_note}")
+    # Already left-aligned: nothing to say.
+    again = resolve_variant(F508_ALIGNED, reference=_reference())
+    assert again.variant_id_grch38 == F508_ALIGNED and again.alignment_note is None
+    assert "left-aligned" not in again.resolution_note
+
+
+def test_a_typed_insertion_is_left_aligned_too():
+    from snp_phewas_variant import resolve_variant
+
+    v = resolve_variant("17_43057063_G_GG", reference=_reference())
+    assert v.variant_id_grch38 == "17_43057062_T_TG"
+    assert "is the same insertion as 17_43057062_T_TG" in v.alignment_note
+
+
+def test_a_one_base_substitution_never_reads_the_reference():
+    from snp_phewas_variant import resolve_variant
+
+    def never(*_a, **_k):
+        raise AssertionError("a one-base substitution read the reference")
+
+    v = resolve_variant("1_109274968_G_T", reference=never)
+    assert v.variant_id_grch38 == "1_109274968_G_T" and v.alignment_note is None
+
+
+def test_the_reference_not_reached_runs_the_id_as_typed_and_says_so():
+    """An outage of the reference is not a finding about the variant: the lookup runs on the
+    id as typed and the answer says what that may cost, never a raise."""
+    from snp_phewas_normalize import ReferenceUnreachable
+    from snp_phewas_variant import resolve_variant
+
+    def down(*_a, **_k):
+        raise ReferenceUnreachable("Ensembl's reference sequence did not answer within 30 s")
+
+    v = resolve_variant(F508_TYPED, reference=down)
+    assert v.variant_id_grch38 == F508_TYPED and v.anchor_variant_id == F508_TYPED
+    assert v.alignment_note == (
+        "it is a deletion and was looked up as typed, because Ensembl's reference sequence "
+        "could not be reached to left-align it; a source that holds it under its left-aligned "
+        "id would read as having no record")
+    assert v.resolution_note.endswith("; " + v.alignment_note)
+
+
+def test_bases_that_are_not_grch38s_are_refused_in_words():
+    """7:117559591 is TCTT on GRCh38; a typed CTTT there is another build or strand, never
+    looked up as a variant the sources would read as absent."""
+    from snp_phewas_variant import VariantResolutionError, resolve_variant
+
+    with pytest.raises(VariantResolutionError,
+                       match="^GRCh38 has TCTT at 7:117559591, not CTTT; check the genome "
+                             "build or strand$"):
+        resolve_variant("7_117559591_CTTT_C", reference=_reference())
+
+
+def test_a_position_past_the_chromosome_end_is_refused_without_a_read():
+    from snp_phewas_variant import VariantResolutionError, resolve_variant
+
+    def never(*_a, **_k):
+        raise AssertionError("read the reference past the chromosome end")
+
+    with pytest.raises(VariantResolutionError, match="chromosome MT ends at position 16,569"):
+        resolve_variant("MT_16600_AT_A", reference=never)
+
+
+def test_a_repeat_longer_than_the_window_runs_as_typed_and_says_so():
+    from snp_phewas_normalize import ReferenceWindow
+    from snp_phewas_variant import resolve_variant
+
+    full = _window("sequence_7_117557001_117560000")
+    # A window that starts AT the deletion: aligning needs the base to its left.
+    tiny = ReferenceWindow("7", 117559591, full.seq[117559591 - full.start:])
+    v = resolve_variant(F508_TYPED, reference=lambda *_a: tiny)
+    assert v.variant_id_grch38 == F508_TYPED
+    assert v.alignment_note.startswith(
+        "it is a deletion and was looked up as typed, because it sits in a repeat longer "
+        "than the 2,000 bases read to its left")
+
+
+def test_a_grch37_deletion_is_mapped_then_left_aligned():
+    from snp_phewas_variant import resolve_variant
+
+    def to_f508(from_build, chrom, start, end, to_build):
+        assert (from_build, to_build) == ("GRCh37", "GRCh38")
+        d = 117559591 - 117199645
+        return [{"original": {"start": start, "end": end},
+                 "mapped": {"coord_system": "chromosome", "seq_region_name": chrom,
+                            "start": start + d, "end": end + d, "strand": 1}}]
+
+    v = resolve_variant("7:117199645:TCTT:T", build="GRCh37", map_fn=to_f508,
+                        reference=_reference())
+    assert v.variant_id_grch38 == F508_ALIGNED
+    assert v.resolution_note.startswith("variant 7_117199645_TCTT_T given on GRCh37; GRCh37 "
+                                        "7:117199645 is GRCh38 7:117559591; ")
+    assert v.alignment_note == (
+        f"{F508_TYPED}, as mapped, is the same deletion as {F508_ALIGNED}, the left-aligned "
+        "form gnomAD uses, so this answer is for that id")
+
+
+def test_the_lookup_queries_every_source_under_the_left_aligned_id(offline_kwargs):
+    from snp_phewas_demo import DemoFinnGenApi, demo_readers
+
+    api = DemoFinnGenApi()
+    offline_kwargs["readers"] = demo_readers(api=api)
+    r = lookup_variant(F508_TYPED, reference=_reference(), **offline_kwargs)
+    assert r.variant.variant_id_grch38 == F508_ALIGNED
+    assert {x.variant_id_grch38 for x in r.rows} == {F508_ALIGNED}
+    assert "7:117559590-ATCT-A" in api.calls
+    assert not [c for c in api.calls if "117559591" in c]
+    assert any(f"is the same deletion as {F508_ALIGNED}" in n for n in r.notes)
+
+
+def test_the_left_aligner_is_vt_normalize():
+    """Tan 2015, Algorithm 1, on a constructed window: a deletion in a run slides left to
+    the run's first base; an insertion likewise; trimming keeps one anchor base."""
+    from snp_phewas_normalize import ReferenceWindow, left_align
+
+    w = ReferenceWindow("1", 100, "GCAAAAT")  # positions 100..106
+    assert left_align("1", 104, "AA", "A", w) == ("1", 101, "CA", "C")
+    assert left_align("1", 105, "A", "AA", w) == ("1", 101, "C", "CA")
+    assert left_align("1", 106, "T", "G", w) == ("1", 106, "T", "G")  # never moved

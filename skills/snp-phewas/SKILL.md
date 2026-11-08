@@ -176,8 +176,8 @@ biobanks and nothing else. It does not fine-map, colocalize, run MR, or search l
 | Format | Example | Notes |
 |--------|---------|-------|
 | rsID | `rs12740374` | Resolved through the Open Targets variant search. When the rsID names several alleles at one position, the one with the most GWAS credible sets is read, then the highest gnomAD frequency, then the search's order; the report names the others and what separated the chosen allele from the runner-up |
-| GRCh38 variant id | `1_109274968_G_T` | `_`, `:` or `-` separators; `chr` prefix allowed |
-| GRCh37 variant id | `1:109817590:G:T` with `--build GRCh37` | Mapped to GRCh38 with the Ensembl assembly mapper |
+| GRCh38 variant id | `1_109274968_G_T` | `_`, `:` or `-` separators; `chr` prefix allowed. An insertion, deletion or multi-base change is left-aligned against GRCh38 into the form gnomAD uses (`7_117559591_TCTT_T` is read as `7_117559590_ATCT_A`) and the report says so |
+| GRCh37 variant id | `1:109817590:G:T` with `--build GRCh37` | Mapped to GRCh38 with the Ensembl assembly mapper, then left-aligned like a GRCh38 id |
 | Text file | `--input variant.txt` | First non-comment line; one variant per run |
 
 ## Workflow
@@ -189,6 +189,13 @@ biobanks and nothing else. It does not fine-map, colocalize, run MR, or search l
    now" for an outage, "asking again will not help" when Open Targets refused the query
    (HTTP 400 / 413, or its own refusal message; a defect in this skill, never an outage).
    Either way the allele is provisional (`allele_choice`, and `anchor_variant_id` is None).
+   A typed (or GRCh37-mapped) insertion, deletion or multi-base change is left-aligned and
+   trimmed against a GRCh38 window read from Ensembl (`snp_phewas_normalize.py`, vt
+   normalize; Tan 2015), so every source is queried under the id gnomAD and Open Targets
+   hold; the report says so (`alignment_note`). A one-base substitution is never sent. The
+   reference not reached, or a repeat longer than the 2,000 bases read to the left, runs the
+   id as typed and the report says what that may cost; reference bases that are not
+   GRCh38's at the position stop the run (another build or strand).
 2. **Place** (prescriptive): map to GRCh37 with the Ensembl assembly mapper for Pan-UK
    Biobank. Zero or several placements, a length change, or an indel on the opposite
    strand is `build_unmappable`; an Ensembl outage is `dataset_unreachable`.
@@ -653,7 +660,11 @@ from such a table plugs into `lookup_variant(readers=...)`, and every downstream
   and allele weights)
 - Dyer SC, Austine-Orimoloye O, Azov AG, Barba M, Barnes I, Barrera-Enriquez VP, et al.
   Ensembl 2025. Nucleic Acids Res. 2025;53(D1):D948-D957. doi:10.1093/nar/gkae1071.
-  PMID: 39656687. (GRCh38 to GRCh37 assembly mapping)
+  PMID: 39656687. (GRCh38 to GRCh37 assembly mapping, and the GRCh38 reference sequence a
+  typed indel is left-aligned against)
+- Tan A, Abecasis GR, Kang HM. Unified representation of genetic variants. Bioinformatics.
+  2015;31(13):2202-2204. doi:10.1093/bioinformatics/btv112. PMID: 25701572. (Left-alignment
+  of a typed insertion or deletion, its Algorithm 1)
 - Li H. Tabix: fast retrieval of sequence features from generic TAB-delimited files.
   Bioinformatics. 2011;27(5):718-719. doi:10.1093/bioinformatics/btq671. PMID: 21208982.
   (The index format the reader walks)

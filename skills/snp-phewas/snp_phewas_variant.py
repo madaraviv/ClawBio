@@ -10,8 +10,14 @@
   across questions remembers the rsID only and ranks again next time.
 * A refused Open Targets query is `QueryRefused` (a `SourceUnreachable`): a retry repeats
   it, so it is never said as an outage.
-* A typed `chr_pos_ref_alt` (`_`, `:` or `-` separated, optional `chr`) passes through;
-  with `build="GRCh37"` it is first mapped to GRCh38.
+* A typed `chr_pos_ref_alt` (`_`, `:` or `-` separated, optional `chr`) is read on GRCh38;
+  with `build="GRCh37"` it is first mapped to GRCh38. An insertion, deletion or multi-base
+  change is then left-aligned against GRCh38 (`snp_phewas_normalize`, vt normalize), so a
+  right-aligned spelling (`7_117559591_TCTT_T`) is read under the id gnomAD holds
+  (`7_117559590_ATCT_A`) and the answer says so (`alignment_note`). A one-base substitution
+  is never sent for a window. The reference not reached, or a repeat longer than the window,
+  runs the id as typed and the answer says why; reference bases that are not GRCh38's are a
+  `VariantResolutionError`.
 * GRCh38 -> GRCh37 for Pan-UKBB: the Ensembl REST assembly mapper
   (`/map/human/GRCh38/<region>/GRCh37`), which returns the mapped strand. A position with
   zero or several primary-chromosome placements, or one whose mapped length differs, is
@@ -96,6 +102,11 @@ class ResolvedVariant:
     #: only this clause reads it rather than splitting the sentence.
     allele_note: str | None = None
     allele_choice: str = ALLELE_ONLY
+    #: The clause of `resolution_note` saying how a typed insertion, deletion or multi-base
+    #: change was written (left-aligned into the form gnomAD uses, or looked up as typed and
+    #: why), or None when nothing about it needed saying (a one-base substitution, an indel
+    #: already left-aligned, an rsID). A field for the same reason as `allele_note`.
+    alignment_note: str | None = None
 
     @property
     def variant_id_grch38(self) -> str:
@@ -187,24 +198,88 @@ def map_placement(p: Placement, to_build: str, *, map_fn: MapFn | None = None
     return out, note
 
 
+#: `reference(chrom, pos, ref_len)` -> the GRCh38 window an allele is left-aligned over
+#: (`snp_phewas_normalize.reference_window` by default).
+ReferenceFn = Callable[[str, int, int], Any]
+
+
+def _kind(ref: str, alt: str) -> str:
+    return "deletion" if len(ref) > len(alt) else "insertion" if len(ref) < len(alt) else "change"
+
+
+def left_align_typed(p: Placement, said: str, *, reference: ReferenceFn | None = None
+                     ) -> tuple[Placement, str | None]:
+    """`(placement, clause)` for a typed GRCh38 placement, left-aligned and trimmed against
+    GRCh38. `said` is how the answer names the id it was given ("as typed", or "as mapped"
+    from GRCh37). The clause is None when nothing moved.
+
+    A one-base substitution costs no read. The reference not reached, and a repeat longer
+    than the window read to the allele's left, return the placement as typed with a clause
+    saying so and what it may cost, never a raise: the variant is named, only its spelling
+    is unconfirmed. Bases that are not GRCh38's at the position raise
+    `VariantResolutionError` (a typed id on another build or strand)."""
+    from snp_phewas_normalize import (
+        LEFT_BP,
+        SOURCE,
+        PositionPastChromosomeEnd,
+        ReferenceMismatch,
+        ReferenceUnreachable,
+        RepeatExceedsWindow,
+        normalize_allele,
+    )
+
+    kind = _kind(p.ref, p.alt)
+    kind = "multi-base change" if kind == "change" else kind
+    as_typed = (f"it is {'an' if kind == 'insertion' else 'a'} {kind} and was looked up "
+                f"{said}, because ")
+    no_record = "; a source that holds it under its left-aligned id would read as having no record"
+    try:
+        chrom, pos, ref, alt = normalize_allele(p.chrom, p.pos, p.ref, p.alt,
+                                                reference=reference)
+    except ReferenceUnreachable:
+        return p, as_typed + f"{SOURCE} could not be reached to left-align it" + no_record
+    except RepeatExceedsWindow:
+        return p, (as_typed + f"it sits in a repeat longer than the {LEFT_BP:,} bases read to "
+                   f"its left" + no_record)
+    except PositionPastChromosomeEnd as e:
+        # Before the mismatch branch: it has no GRCh38 bases to name.
+        raise VariantResolutionError(f"{e}; check the genome build") from e
+    except ReferenceMismatch as e:
+        raise VariantResolutionError(
+            f"GRCh38 has {e.expected} at {e.chrom}:{e.pos}, not {e.ref}; check the genome "
+            f"build or strand") from e
+    out = Placement("GRCh38", chrom, pos, ref, alt, p.strand_vs_grch38)
+    if out == p:
+        return p, None
+    return out, (f"{p.variant_id}, {said}, is the same {_kind(ref, alt)} as {out.variant_id}, "
+                 f"the left-aligned form gnomAD uses, so this answer is for that id")
+
+
 def resolve_variant(query: str, *, build: str = "GRCh38",
                     rsid_resolver: Callable[[str], str | list[str]] | None = None,
                     map_fn: MapFn | None = None,
-                    allele_weight: Callable[[str], tuple[int, float]] | None = None
+                    allele_weight: Callable[[str], tuple[int, float]] | None = None,
+                    reference: ReferenceFn | None = None
                     ) -> ResolvedVariant:
     """Resolve an rsID or a typed variant id to its GRCh38 placement.
 
     `allele_weight(variant_id) -> (GWAS credible sets, highest allele frequency)` ranks the
     alleles an rsID names at one position. With no `rsid_resolver` both come from Open
     Targets; an injected resolver without a weight is read in its own order, and the answer
-    then claims no reason for the choice."""
+    then claims no reason for the choice. `reference` reads the GRCh38 window a typed
+    insertion, deletion or multi-base change is left-aligned over (`left_align_typed`); by
+    default Ensembl's, one read per window per process."""
     q = (query or "").strip()
     parsed = parse_variant_id(q)
     if parsed is not None:
         chrom, pos, ref, alt = parsed
         if build == "GRCh38":
-            p = Placement("GRCh38", chrom, pos, ref, alt)
-            return ResolvedVariant(q, p, None, f"variant {p.variant_id}, read as GRCh38 (the default; pass --build GRCh37 for a GRCh37 position)")
+            typed = Placement("GRCh38", chrom, pos, ref, alt)
+            p, clause = left_align_typed(typed, "as typed", reference=reference)
+            note = (f"variant {p.variant_id}, read as GRCh38 (the default; pass --build GRCh37 "
+                    f"for a GRCh37 position)")
+            return ResolvedVariant(q, p, None, note + (f"; {clause}" if clause else ""),
+                                   alignment_note=clause)
         if build != "GRCh37":
             raise VariantResolutionError(f"genome build {build!r} is not supported; use GRCh38 or GRCh37")
         p37 = Placement("GRCh37", chrom, pos, ref, alt)
@@ -212,7 +287,10 @@ def resolve_variant(query: str, *, build: str = "GRCh38",
         if p38 is None:
             raise VariantResolutionError(note)
         p38 = Placement("GRCh38", p38.chrom, p38.pos, p38.ref, p38.alt)
-        return ResolvedVariant(q, p38, None, f"variant {p37.variant_id} given on GRCh37; {note}")
+        p38, clause = left_align_typed(p38, "as mapped", reference=reference)
+        note = f"variant {p37.variant_id} given on GRCh37; {note}"
+        return ResolvedVariant(q, p38, None, note + (f"; {clause}" if clause else ""),
+                               alignment_note=clause)
     if _RSID_RE.match(q):
         if rsid_resolver is None:
             rsid_resolver, ot_weight = _ot_resolver_and_weight()

@@ -42,6 +42,7 @@ from snp_phewas_sources import (
 from snp_phewas_variant import (
     MapFn,
     Placement,
+    ReferenceFn,
     ResolvedVariant,
     map_placement,
     resolve_variant,
@@ -215,6 +216,7 @@ def lookup_variant(
     rsid_resolver: Callable[[str], str | list[str]] | None = None,
     allele_weight: Callable[[str], tuple[int, float]] | None = None,
     map_fn: MapFn | None = None,
+    reference: ReferenceFn | None = None,
     harmonize: bool = True,
 ) -> SnpPhewasResult:
     """Look one variant up in every outcome of each curated dataset.
@@ -222,7 +224,8 @@ def lookup_variant(
     `outcomes` optionally restricts the read per dataset ({dataset_id: outcome ids}) and
     overrides `scope` for that dataset; the other catalog outcomes still get a row, with
     status `not_queried`. `readers` injects a reader per dataset_id (demo, tests, local
-    mirrors).
+    mirrors). `reference` reads the GRCh38 window a typed insertion or deletion is
+    left-aligned over (`resolve_variant`).
 
     `scope="harmonized"` (the default): when the lookup includes another biobank family,
     each dataset is read over the outcomes with a READABLE counterpart in another family's
@@ -236,7 +239,7 @@ def lookup_variant(
         raise ValueError(f"scope must be one of {SCOPES}")
     ids = resolve_dataset_ids(datasets)
     v = resolve_variant(variant, build=build, rsid_resolver=rsid_resolver, map_fn=map_fn,
-                        allele_weight=allele_weight)
+                        allele_weight=allele_weight, reference=reference)
     notes = [v.resolution_note + "."]
     rows: list[S.OutcomeRow] = []
     uncat_rows: list[S.OutcomeRow] = []

@@ -156,3 +156,19 @@ def test_rs7903146_resolves_to_the_common_allele_with_gwas_signals_live():
     v = resolve_variant("rs7903146")
     assert v.grch38.variant_id == "10_112998590_C_T"
     assert "most GWAS credible sets" in v.resolution_note and "10_112998590_C_G" in v.resolution_note
+
+
+@pytest.mark.parametrize("label, right, left", [
+    ("CFTR F508del", "7_117559591_TCTT_T", "7_117559590_ATCT_A"),
+    ("BRCA1 c.5266dup", "17_43057063_G_GG", "17_43057062_T_TG"),
+])
+def test_live_a_right_aligned_typed_id_resolves_to_the_left_aligned_one(label, right, left):
+    """Through Ensembl's reference sequence, a right-aligned typed indel is read under the
+    left-aligned id gnomAD and Open Targets hold."""
+    from snp_phewas_variant import resolve_variant
+
+    v = resolve_variant(right)
+    assert v.variant_id_grch38 == left, label
+    assert v.query == right and v.anchor_variant_id == left
+    kind = "deletion" if len(left.split("_")[2]) > len(left.split("_")[3]) else "insertion"
+    assert f"is the same {kind} as {left}" in v.alignment_note
