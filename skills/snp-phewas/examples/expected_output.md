@@ -2,9 +2,9 @@
 
 # Variant PheWAS across biobanks: rs12740374
 
-**Date**: 2026-11-09 00:46 UTC
+**Date**: 2026-11-09 01:29 UTC
 **Skill**: snp-phewas
-**Version**: 0.4.0
+**Version**: 0.5.0
 **Variant (GRCh38)**: 1_109274968_G_T
 **Effect allele**: T (other allele G)
 **Datasets**: Pan-UK Biobank (European ancestry), FinnGen R12 (Finnish) and Million Veteran Program (European genetic ancestry)
