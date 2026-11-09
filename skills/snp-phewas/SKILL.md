@@ -320,11 +320,13 @@ negated, EAF 1 - EAF, `allele_flip_applied`. Swapped and strand-ambiguous: direc
 withheld (`direction_withheld_reason`), p and SE kept. Other alleles: `allele_mismatch`.
 EAF is `af_<ancestry>` (Pan-UK Biobank continuous), the controls' `af_controls_<ancestry>`
 (Pan-UK Biobank case/control), `af_alt` (FinnGen files) or `effect_allele_frequency` (MVP).
-The FinnGen API's `maf` is that same alt-allele frequency, not a folded minor-allele
-frequency: on 56 variants whose alt allele is the major one (file `af_alt` 0.55 to 0.99,
-drawn from eight chromosomes), all 8,272 non-null per-endpoint `maf` values were above 0.5,
-none of 2,489 on 16 alt-minor variants was, and where the API filled the same endpoint
-`maf` equaled the file's `af_alt` to the last digit (measured 2026-11-01). Every one is the
+The FinnGen API's `maf`, which only the API route reads, is that same alt-allele frequency,
+not a folded minor-allele frequency: on 56 variants whose alt allele is the major one (file
+`af_alt` > 0.5; drawn from one 16 kb tile of the R12 I9_CHD file on each of eight
+chromosomes), all 8,272 non-null per-endpoint `maf` values were above 0.5 (`maf` 0.550 to
+0.991), none of 2,489 on 16 alt-minor variants was, and on 14 variants, endpoint I9_CHD (the
+ones whose I9_CHD entry the API filled), `maf` equaled the file's `af_alt` to the last printed
+digit (measured 2026-11-01). Every one is the
 dataset's own participants' frequency, never a reference population's: the rows TSV says
 whose in its `eaf_cohort` column (the dataset's label).
 
@@ -406,18 +408,21 @@ causal variant differ); the verdict uses sign and significance only." The verdic
 unchanged; that pair's paired-effects panel gives no correlation.
 
 **Within-group caveat**: FinnGen's Finnish participants are grouped with the European
-datasets, so Pan-UK Biobank (European) by FinnGen is compared on effect size and gets a
-correlation. Finland is a founder population, and its bottleneck and genetic drift shifted
-allele frequencies relative to other Europeans (Kurki 2023: 62 of the 91 fine-mapped coding
-variants below 5% in non-Finnish Europeans are enriched more than twofold in Finland) and
-shaped linkage disequilibrium across the Finnish genome (Jakkula 2008), so a marker's effect
-size can differ between the two datasets even when the causal variant is shared. The pair
+datasets, so Pan-UK Biobank (European) by FinnGen, and FinnGen by MVP European, are compared
+on effect size and get a correlation. Finland is a founder population: its bottleneck and
+genetic drift shifted allele frequencies relative to other Europeans (Kurki 2023: 62 of the 91
+fine-mapped coding variants below 5% in non-Finnish Europeans are enriched more than twofold
+in Finland) and shaped linkage disequilibrium (Jakkula 2008: more LD in Finns than in
+mainland Europe, the hallmark of a recent founding bottleneck), so a marker's effect size can
+differ between the two datasets even when the causal variant is shared. Such a pair
 therefore carries a two-sentence caveat in the replication section and `result.json`
 (`replication.pairs[].notes`) and a one-line form under its paired-effects panel title; the
 verdicts and the correlation are unchanged. The caveat is declared in `datasets.yaml`
 (`ancestry_group_caveats`, with its sources) beside the grouping it qualifies, and
 `load_datasets` fails loud when a dataset is grouped under a broader group than its own
-ancestry without one. A cross-ancestry pair (FinnGen by Pan-UK Biobank African, say) carries
+ancestry without one, when an entry lacks its report, figure line or sources, when a source
+is not an NLM citation with year, doi and PMID, or when the report does not name a source by
+author and year. A cross-ancestry pair (FinnGen by Pan-UK Biobank African, say) carries
 the cross-ancestry note instead, since its effect sizes are not compared at all.
 
 **Exit status**: a classified failure prints one plain line on stderr (after any retry

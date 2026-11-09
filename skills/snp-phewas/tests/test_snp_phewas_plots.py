@@ -229,4 +229,24 @@ def test_the_mvp_subtitle_fits_inside_the_figure(tmp_path, monkeypatch):
     assert text.startswith("981 of 1,667 readable outcomes looked up (matched to another biobank)")
     assert "403 with no readable file" in text and "compressed" in text
     assert right <= edge, (text, right, edge)
+    assert text.count("\n") == 1  # broken between two parts, nothing dropped
+    assert text.replace("\n", "  ·  ").endswith("shaded: y axis compressed above 20")
+    # the lifted panel title clears both subtitle lines and, on the top panel, the legend
+    # (the header rises with it); measured on the drawn figure, not on the strings
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    r = FigureCanvasAgg(fig).get_renderer()
+    ax = fig.axes[0]
+    title = ax.title.get_window_extent(r)
+    (sub_t,) = [t for t in ax.texts if t.get_text() == text]
+    (legend,) = fig.legends
+    assert title.y0 >= sub_t.get_window_extent(r).y1, "the title sits on the subtitle"
+    assert title.y1 <= legend.get_window_extent(r).y0, "the title sits on the legend"
     plots.plt.close(fig)
+
+
+def test_a_subtitle_with_one_part_is_never_broken():
+    """The break needs a separator to break at; a subtitle without one stays on one line
+    rather than failing the figure."""
+    assert plots._break_in_two("981 of 1,667 outcomes") is None
+    assert plots._break_in_two("a  ·  b  ·  long third part") == "a  ·  b\nlong third part"

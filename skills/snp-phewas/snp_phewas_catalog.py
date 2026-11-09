@@ -20,6 +20,7 @@ from __future__ import annotations
 import csv
 import gzip
 import os
+import re
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any
@@ -86,7 +87,42 @@ class GroupCaveat:
     dataset_id: str
     report: str  # the replication section's and result.json's sentences
     figure: str  # the shorter line under the paired-effects panel title
-    sources: tuple[str, ...]  # the citations behind them
+    sources: tuple[str, ...]  # the citations behind them, NLM with doi and PMID
+    #: One per source, parsed from it: {"short": "Kurki 2023", "doi", "pmid", "year"}. The
+    #: report names each by its short form.
+    citations: tuple[dict[str, Any], ...] = ()
+
+
+#: An NLM source: "Surname AB, ... Title. Journal. 2023;613(7944):508-518. doi:10.x. PMID: n."
+_NLM = re.compile(r"^(?P<surname>[^\s,]+)\s.*?\.\s(?P<year>(?:19|20)\d{2});.*?"
+                  r"doi:(?P<doi>10\.\S+?)\.\s+PMID:\s*(?P<pmid>\d+)\.")
+
+
+def _group_caveat(dataset_id: str, cav: Any) -> GroupCaveat:
+    """One `ancestry_group_caveats` entry, checked loud: the three keys present, every source
+    an NLM citation with year, doi and PMID, and each source's short form ("Kurki 2023")
+    named in the report it backs."""
+    missing = [k for k in ("report", "figure", "sources")
+               if not isinstance(cav, dict) or not cav.get(k)]
+    if missing:
+        raise ValueError(f"datasets.yaml: `ancestry_group_caveats.{dataset_id}` lacks "
+                         f"{', '.join(missing)}")
+    report = " ".join(str(cav["report"]).split())
+    sources = tuple(" ".join(str(x).split()) for x in cav["sources"])
+    cites = []
+    for src in sources:
+        m = _NLM.match(src)
+        if m is None:
+            raise ValueError(f"datasets.yaml: `ancestry_group_caveats.{dataset_id}` source is "
+                             f"not an NLM citation with year, doi and PMID: {src[:80]!r}")
+        short = f"{m['surname']} {m['year']}"
+        if short not in report:
+            raise ValueError(f"datasets.yaml: `ancestry_group_caveats.{dataset_id}` report does "
+                             f"not name its source {short!r}")
+        cites.append({"short": short, "doi": m["doi"], "pmid": m["pmid"],
+                      "year": int(m["year"])})
+    return GroupCaveat(dataset_id, report, " ".join(str(cav["figure"]).split()), sources,
+                       tuple(cites))
 
 
 @dataclass(frozen=True)
@@ -162,11 +198,7 @@ def load_datasets() -> dict[str, DatasetSpec]:
             short_label=str(d.get("short_label") or d["label"]),
             samples=samples,
             ancestry_group=group,
-            ancestry_group_caveat=(GroupCaveat(dsid, " ".join(str(cav["report"]).split()),
-                                               " ".join(str(cav["figure"]).split()),
-                                               tuple(" ".join(str(s).split())
-                                                     for s in cav["sources"]))
-                                   if cav is not None else None),
+            ancestry_group_caveat=_group_caveat(dsid, cav) if cav is not None else None,
         )
     if caveats:
         raise ValueError(f"datasets.yaml: `ancestry_group_caveats` names datasets that do not "

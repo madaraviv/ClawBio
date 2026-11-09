@@ -663,6 +663,27 @@ def test_a_broader_ancestry_group_without_a_caveat_fails_loud(monkeypatch):
     monkeypatch.setattr(C, "_load_yaml", lambda: unknown)
     with pytest.raises(ValueError, match="do not exist: \\['nope'\\]"):
         C.load_datasets()
+    caveats = raw["ancestry_group_caveats"]
+    # an entry missing a key is the same loud ValueError, never a KeyError
+    for key in ("report", "figure", "sources"):
+        partial = {k: v for k, v in caveats["finngen_r12"].items() if k != key}
+        monkeypatch.setattr(C, "_load_yaml", lambda p=partial: {
+            **raw, "ancestry_group_caveats": {**caveats, "finngen_r12": p}})
+        with pytest.raises(ValueError, match=f"finngen_r12` lacks {key}"):
+            C.load_datasets()
+    # a source that is not an NLM citation, or that the report does not name, fails too
+    for sources, why in ((["Kurki 2023, a paper"], "not an NLM citation"),
+                         ([caveats["finngen_r12"]["sources"][0].replace("Kurki MI", "Smith MI")],
+                          "does not name its source 'Smith 2023'")):
+        bad = {**caveats["finngen_r12"], "sources": sources}
+        monkeypatch.setattr(C, "_load_yaml", lambda b=bad: {
+            **raw, "ancestry_group_caveats": {**caveats, "finngen_r12": b}})
+        with pytest.raises(ValueError, match=why):
+            C.load_datasets()
+    monkeypatch.setattr(C, "_load_yaml", lambda: raw)
+    assert [c["short"] for c in C.get_dataset("finngen_r12").ancestry_group_caveat.citations] \
+        == ["Kurki 2023", "Jakkula 2008"]
+    assert C.get_dataset("finngen_r12").ancestry_group_caveat.citations[1]["pmid"] == "19061986"
 
 
 def test_same_biobank_pairs_are_headed_so_with_all_datasets():

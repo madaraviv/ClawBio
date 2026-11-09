@@ -178,10 +178,10 @@ ancestry_group_caveats:
       to other Europeans and shaped linkage disequilibrium across the Finnish genome (Kurki
       2023; Jakkula 2008). A marker's effect size can therefore differ between the two datasets
       even when the causal variant is shared, so read this pair's effect-size comparison as
-      looser than one within a single group.
+      looser than one within a single population.
     figure: >-
       FinnGen is a founder population: allele frequencies and linkage differ from other
-      Europeans, so this effect-size comparison is looser than one within a single group
+      Europeans, so this effect-size comparison is looser than within one population
     sources:
       - >-
         Kurki MI, Karjalainen J, Palta P, et al. FinnGen provides genetic insights from a
@@ -193,9 +193,11 @@ ancestry_group_caveats:
       - >-
         Jakkula E, Rehnström K, Varilo T, et al. The genome-wide patterns of variation expose
         significant substructure in a founder population. Am J Hum Genet.
-        2008;83(6):787-794. doi:10.1016/j.ajhg.2008.11.005. PMID: 19061986. (Genetic
-        distances, homozygosity and linkage-disequilibrium patterns across Finnish
-        subpopulations carry the imprint of consecutive bottlenecks.)
+        2008;83(6):787-794. doi:10.1016/j.ajhg.2008.11.005. PMID: 19061986. (Compared to
+        mainland Europe, the Finnish genome shows lower genetic diversity and more linkage
+        disequilibrium, hallmarks of a recent founding bottleneck; genetic distances,
+        homozygosity and linkage-disequilibrium patterns across Finnish subpopulations carry
+        the imprint of consecutive bottlenecks.)
 
 # The participant groups a dataset's `samples` may name, each with the plain-language name a
 # report uses when it says why two datasets are not compared.

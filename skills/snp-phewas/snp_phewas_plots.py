@@ -338,6 +338,17 @@ def _style(ax) -> None:
     ax.set_axisbelow(True)
 
 
+def _break_in_two(sub: str, sep: str = "  ·  ") -> str | None:
+    """A subtitle on two lines, broken between two of its `sep` parts as evenly as the parts
+    allow; None when it has a single part, which is then left on one line."""
+    parts = sub.split(sep)
+    if len(parts) < 2:
+        return None
+    k = min(range(1, len(parts)),
+            key=lambda j: abs(len(sep.join(parts[:j])) - len(sep.join(parts[j:]))))
+    return sep.join(parts[:k]) + "\n" + sep.join(parts[k:])
+
+
 def manhattan(result: Any, out_png: str, *, stats: dict | None = None) -> str:
     """One stacked panel per dataset: outcomes read on x, grouped by body-system category;
     -log10 p on y, log-compressed above COMPRESS_KNEE when the top hit is far above it.
@@ -354,6 +365,7 @@ def manhattan(result: Any, out_png: str, *, stats: dict | None = None) -> str:
     # have a renderer (matplotlib 3.11 detaches it on close).
     canvas = FigureCanvasAgg(fig)
     renderer = canvas.get_renderer()
+    header_lift = 0.0  # figure fraction the header rises when the top panel's title does
     for i, dsid in enumerate(ids):
         ax = fig.add_subplot(gs[i, 0])
         _style(ax)
@@ -466,17 +478,20 @@ def manhattan(result: Any, out_png: str, *, stats: dict | None = None) -> str:
             sub += f"  ·  shaded: y axis compressed above {knee:g}"
         sub_t = ax.text(0, 1.02, sub, transform=ax.transAxes, fontsize=8, color=INK_2,
                         va="bottom")
-        if sub_t.get_window_extent(renderer).x1 > fig.get_window_extent(renderer).x1 - 4:
+        two = _break_in_two(sub)
+        if (two is not None and sub_t.get_window_extent(renderer).x1
+                > fig.get_window_extent(renderer).x1 - 4):
             # too long for one line (a panel with many hits, some unlabeled, and a compressed
-            # axis): break it between two of its parts, and lift the title over both lines
-            parts = sub.split("  ·  ")
-            k = min(range(1, len(parts)), key=lambda j: abs(
-                len("  ·  ".join(parts[:j])) - len("  ·  ".join(parts[j:]))))
-            sub_t.set_text("  ·  ".join(parts[:k]) + "\n" + "  ·  ".join(parts[k:]))
+            # axis): break it between two of its parts, and lift the title over both lines; on
+            # the top panel the header (variant line and legend) rises by the same 11 pt, or
+            # the lifted title would sit on the legend
+            sub_t.set_text(two)
             ax.set_title(spec.label, fontsize=10.5, color=INK, loc="left", fontweight="bold",
                          pad=27)
+            if i == 0:
+                header_lift = (27 - 16) / 72 / fig.get_figheight()
     v = result.variant
-    fig.text(0.06, 1 - 0.25 * top_pad, f"{v.rs_id or v.variant_id_grch38}  ·  "
+    fig.text(0.06, 1 - 0.25 * top_pad + header_lift, f"{v.rs_id or v.variant_id_grch38}  ·  "
              f"{v.variant_id_grch38}  ·  effect allele {v.grch38.alt}", fontsize=12, color=INK,
              fontweight="bold", va="center")
     handles = [
@@ -489,8 +504,9 @@ def manhattan(result: Any, out_png: str, *, stats: dict | None = None) -> str:
         Line2D([], [], color=INK_2, lw=0.9, label="significance line (Bonferroni)"),
         Line2D([], [], color=MUTED, lw=0.9, ls=(0, (4, 3)), label="5e-8 (reference)"),
     ]
-    fig.legend(handles=handles, loc="center left", bbox_to_anchor=(0.055, 1 - 0.62 * top_pad),
-               ncol=7, fontsize=7.5, frameon=False, handletextpad=0.4, columnspacing=1.4,
+    fig.legend(handles=handles, loc="center left",
+               bbox_to_anchor=(0.055, 1 - 0.62 * top_pad + header_lift), ncol=7,
+               fontsize=7.5, frameon=False, handletextpad=0.4, columnspacing=1.4,
                labelcolor=INK_2)
     fig.savefig(out_png, dpi=150, facecolor=SURFACE, bbox_inches="tight", pad_inches=0.15)
     plt.close(fig)

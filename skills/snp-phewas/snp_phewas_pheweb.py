@@ -17,9 +17,10 @@ tabix). So an API-only read must label the rest "above the API's reporting thres
 never "not tested"; the default `hybrid` route reads those endpoints from the files.
 
 `maf` is the alt-allele frequency, not a folded minor-allele frequency: on 56 variants
-whose alt allele is the major one (file `af_alt` 0.55 to 0.99, eight chromosomes), every one
-of the 8,272 non-null `maf` values was above 0.5, and where both exist `maf` equals the
-endpoint file's `af_alt` (measured 2026-11-01; `FinnGenReader._api_record` has the counts).
+whose alt allele is the major one (file `af_alt` > 0.5, eight chromosomes), every one of the
+8,272 non-null `maf` values was above 0.5 (`maf` 0.550 to 0.991), and on 14 variants, endpoint
+I9_CHD, `maf` equaled that endpoint file's `af_alt` (measured 2026-11-01;
+`FinnGenReader._api_record` in snp_phewas_sources.py has the counts).
 
 A variant the API does not hold answers HTTP 404 (measured for `1:109274968-G-A`,
 `1:109274968-T-G` and `1:1-A-G`), so a 404 is "not in FinnGen under this allele order",
