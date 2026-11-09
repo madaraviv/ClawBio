@@ -120,11 +120,10 @@ put them on one effect allele and one outcome key, and say which associations re
 - **With it**: every outcome of each biobank is a row (tested or not, with the reason), on
   the Open Targets alternative allele, with FinnGen endpoints, Pan-UK Biobank outcomes and MVP
   studies on one join key and a verdict per shared outcome for every pair of biobanks and
-  across all three. The default three-biobank read took 159 s and 613 s in two runs with an
-  empty index cache, and 57 s and 66 s with the indexes cached (measured 2026-10-19 on a Mac
-  mini, 16 workers per biobank, over the 2026-10-19 MVP catalog; the cold spread is the GWAS
-  Catalog's download speed). The 2026-10-31 MVP catalog reads more MVP files (below), and
-  these times have not been re-measured on it.
+  across all three. The default three-biobank read of rs12740374 took 699 s with an empty
+  index cache and 123 s with every index cached (measured 2026-11-08 on a Mac mini, 16
+  workers per biobank; the biobanks are read at once, so the time is the slowest one's, the
+  Million Veteran Program's).
 - **Why ClawBio**: values are read from the biobanks' own files; nothing is estimated. The
   skill `gwas-lookup` calls the same FinnGen web endpoint for its FinnGen leg. This skill
   differs in five ways: it reads Pan-UK Biobank and the Million Veteran Program (not in
@@ -225,10 +224,10 @@ biobanks and nothing else. It does not fine-map, colocalize, run MR, or search l
 
 ```bash
 # Default: the outcomes matched across the three biobanks (1,363 Pan-UKBB + 622 FinnGen + 981 MVP)
-# (first run downloads at least 4.53 GB of index files into the cache; see Cost and cache)
+# (first run downloads up to 5.36 GB of index files into the cache; see Cost and cache)
 python skills/snp-phewas/snp_phewas.py --variant rs12740374 --output /tmp/snp_phewas
 
-# Every outcome in every biobank (7,160 + 2,469 + the 1,667 readable MVP studies; at least 20.0 GB of indexes)
+# Every outcome in every biobank (7,160 + 2,469 + the 1,667 readable MVP studies; 20.80 GB of indexes)
 python skills/snp-phewas/snp_phewas.py --variant rs12740374 --all-outcomes --output /tmp/x
 
 # One ancestry group in every biobank that has it (AFR, AMR, CSA, EAS, EUR, MID, META)
@@ -459,13 +458,14 @@ its report with the other groups and an example command.
 
 **Cost and cache**: each outcome file needs its tabix index, downloaded once into
 `--index-cache` (default `~/.clawbio/snp_phewas/index`, or `SNP_PHEWAS_INDEX_CACHE`), keyed
-by release. Index sizes, summed from the sources' Content-Length (2026-10-18 for Pan-UK
-Biobank and FinnGen in full, 2026-10-19 for the rest) over the 2026-10-19 MVP catalog:
-4.53 GB for the default matched files then (1,156 + 622 + 727 files: 2.15 GB Pan-UK
-Biobank, 1.10 GB FinnGen, 1.27 GB MVP), 20.0 GB for `--all-outcomes` (13.54 + 4.37 +
-2.12 GB, 1,221 MVP files). The 2026-10-31 catalog reads a superset of those files (1,363 +
-622 + 981 matched, 1,667 MVP in full), so these are lower bounds until re-measured. The CLI says what it will read and download on stderr before it
-starts. The `--all-outcomes` wall time is not measured.
+by release. Index sizes, summed from the sources' Content-Length over every index file the
+catalogs read (a HEAD request each, 11,296 files, all answered; measured 2026-11-08 from a
+Mac mini): 5.36 GB for the default matched files (1,363 + 622 + 981 files: 2.54 GB Pan-UK
+Biobank, 1.10 GB FinnGen, 1.71 GB MVP) and 20.80 GB for `--all-outcomes` (7,160 + 2,469 +
+1,667 files: 13.54 + 4.37 + 2.89 GB). A first default run downloads up to the 5.36 GB: FinnGen
+endpoints the web API answered need no file, so rs12740374 downloaded 2,908 indexes, 5.25 GB.
+The CLI says what it will read and download on stderr before it starts. The
+`--all-outcomes` wall time is not measured.
 
 ## Example Queries
 
@@ -504,12 +504,14 @@ GiB (2.08 GB) of indexes downloaded. Every one of the 589 + 622 outcomes was tes
 Replication over the 589 shared outcomes (threshold 0.05 / 589): 4 replicate (E78
 lipoprotein disorders, ischemic heart disease, angina pectoris, abdominal aortic aneurysm),
 5 are same-direction significant in one only, 580 are null in both. Live, the default three
-biobanks (measured 2026-10-19 on a Mac mini, 16 workers each, over the 2026-10-19 MVP
-catalog), rs12740374 with an empty
-index cache: 159 s in one run and 613 s in another, the second with the MVP leg at 605 s
-(Pan-UK Biobank 92 s, FinnGen 50 s), so the first-run time is mostly the GWAS Catalog's
-download speed; rs2228145 with the indexes cached: 66 s (57 s in an earlier warm run). Read
-one after another instead of at once, the first cold run's legs took 308 s (104 + 47 + 153 s).
+biobanks, rs12740374 (measured 2026-11-08 on a Mac mini, 16 workers each; 1,363 + 622 + 981
+outcomes, all answered): with an empty index cache, 699 s wall time (8:15 to 8:27 PM ET;
+Pan-UK Biobank 111 s, FinnGen 55 s, MVP 697 s; 2,908 indexes downloaded, 5.25 GB), so the
+first-run time is mostly the GWAS Catalog's download speed; with every index cached, 123 s
+(8:13 to 8:15 PM ET; Pan-UK Biobank 80 s, FinnGen 71 s, MVP 109 s; 0 downloaded, 2,908 read
+from the cache). The biobanks are read at once, so the wall time is about the slowest
+biobank's, not the sum. An earlier cold run that evening lost Pan-UK Biobank to an Ensembl
+assembly-mapper HTTP 500 (reported as an outage for its 1,363 outcomes) and is not used.
 
 ## Output Structure
 

@@ -287,9 +287,9 @@ def test_demo_through_the_runner_writes_only_under_output(tmp_path):
 
 
 def test_a_live_run_warns_about_the_index_download_before_it_starts(monkeypatch, capsys, tmp_path):
-    """The first default run downloads at least 4.53 GB of index files (summed from
-    Content-Length for the matched files of the three biobanks over the 2026-10-19 MVP
-    catalog); the user hears it, and what will be read, first."""
+    """The first default run downloads up to 5.36 GB of index files (summed from
+    Content-Length for the matched files of the three biobanks, measured 2026-11-08); the
+    user hears it, and what will be read, first."""
     import snp_phewas as cli
 
     def stop(*a, **k):
@@ -299,12 +299,12 @@ def test_a_live_run_warns_about_the_index_download_before_it_starts(monkeypatch,
     with pytest.raises(SystemExit):
         cli.main(["--variant", "rs12740374", "--output", str(tmp_path)])
     err = capsys.readouterr().err
-    assert "at least 4.53 GB" in err and "(1,363, 622, 981 files in Pan-UK Biobank (European ancestry), " \
+    assert "up to 5.36 GB" in err and "(1,363, 622, 981 files in Pan-UK Biobank (European ancestry), " \
         "FinnGen R12 (Finnish) and Million Veteran Program (European genetic ancestry))" in err
     with pytest.raises(SystemExit):
         cli.main(["--variant", "rs12740374", "--all-outcomes", "--output", str(tmp_path)])
     err = capsys.readouterr().err
-    assert "at least 20.0 GB" in err and "(7,160, 2,469, 1,667 files" in err
+    assert "up to 20.80 GB" in err and "(7,160, 2,469, 1,667 files" in err
 
 
 def test_a_low_confidence_value_is_flagged_and_never_counted_as_a_pass(offline_kwargs, tmp_path):

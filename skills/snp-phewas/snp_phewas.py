@@ -100,15 +100,13 @@ log = logging.getLogger("snp_phewas")
 
 INDEX_SIZE_NOTE = (
     "Index files (downloaded once per release into the index cache; summed from the sources'\n"
-    "Content-Length on 2026-10-19 for the default three biobanks, over that day's MVP\n"
-    "catalog): default matched scope 4.53 GB (1,156 Pan-UK Biobank + 622 FinnGen + 727\n"
-    "Million Veteran Program files); --all-outcomes 20.0 GB (7,160 + 2,469 + 1,221 MVP\n"
-    "files). The 2026-10-31 MVP catalog reads more files (1,363 + 622 + 981 matched; 1,667\n"
-    "MVP in full), so these are lower bounds; --quick none."
+    "Content-Length, measured 2026-11-08 for the default three biobanks): default matched\n"
+    "scope 5.36 GB (1,363 Pan-UK Biobank + 622 FinnGen + 981 Million Veteran Program\n"
+    "files); --all-outcomes 20.80 GB (7,160 + 2,469 + 1,667 files); --quick none."
 )
 # The same numbers, for the message printed before a live run starts.
-INDEX_SIZE_DEFAULT = "at least 4.53 GB"
-INDEX_SIZE_ALL = "at least 20.0 GB"
+INDEX_SIZE_DEFAULT = "up to 5.36 GB"
+INDEX_SIZE_ALL = "up to 20.80 GB"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -473,10 +471,9 @@ def _start_message(datasets: str | list[str], all_outcomes: bool, index_cache: s
     n = [len(matched_outcome_ids(d, ids)) for d in ids]
     default3 = set(ids) == {"pan_ukbb_eur", "finngen_r12", "mvp_eur"}
     size = f"{INDEX_SIZE_DEFAULT} of index files" if default3 else "their index files"
-    timing = (" Measured on a Mac mini for the default three biobanks on the 2026-10-19 MVP "
-              "catalog, which read fewer MVP files: 159 s and 613 s with an empty index cache "
-              "(the spread is the GWAS Catalog's download speed), 57 s and 66 s once the "
-              "indexes are cached." if default3 else "")
+    timing = (" Measured 2026-11-08 on a Mac mini, 16 workers, for the default three "
+              "biobanks: 699 s with an empty index cache (mostly the GWAS Catalog's download "
+              "speed), 123 s once the indexes are cached." if default3 else "")
     return (f"snp-phewas: reading the outcomes matched across the biobanks "
             f"({', '.join(f'{k:,}' for k in n)} files in {labels_listed(ids)}). A first run "
             f"downloads {size} into {where} (reused afterwards).{timing} "
