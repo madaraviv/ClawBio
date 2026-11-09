@@ -176,7 +176,7 @@ biobanks and nothing else. It does not fine-map, colocalize, run MR, or search l
 | Format | Example | Notes |
 |--------|---------|-------|
 | rsID | `rs12740374` | Resolved through the Open Targets variant search. When the rsID names several alleles at one position, the one with the most GWAS credible sets is read, then the highest gnomAD frequency, then the search's order; the report names the others and what separated the chosen allele from the runner-up |
-| GRCh38 variant id | `1_109274968_G_T` | `_`, `:` or `-` separators; `chr` prefix allowed. An insertion, deletion or multi-base change is left-aligned against GRCh38 into the form gnomAD uses (`7_117559591_TCTT_T` is read as `7_117559590_ATCT_A`) and the report says so |
+| GRCh38 variant id | `1_109274968_G_T` | `_`, `:` or `-` separators. Chromosomes are named 1-22, X, Y or MT; a `chr` prefix and lowercase are accepted and `M` is read as MT (`chrM_3243_A_G` is `MT_3243_A_G`); any other name (`0`, `23` and above, `01`) is refused with the format required. An insertion, deletion or multi-base change is left-aligned against GRCh38 into the form gnomAD uses (`7_117559591_TCTT_T` is read as `7_117559590_ATCT_A`) and the report says so |
 | GRCh37 variant id | `1:109817590:G:T` with `--build GRCh37` | Mapped to GRCh38 with the Ensembl assembly mapper, then left-aligned like a GRCh38 id |
 | Text file | `--input variant.txt` | First non-comment line; one variant per run |
 
@@ -194,8 +194,10 @@ biobanks and nothing else. It does not fine-map, colocalize, run MR, or search l
    normalize; Tan 2015), so every source is queried under the id gnomAD and Open Targets
    hold; the report says so (`alignment_note`). A one-base substitution is never sent. The
    reference not reached, or a repeat longer than the 2,000 bases read to the left, runs the
-   id as typed and the report says what that may cost; reference bases that are not
-   GRCh38's at the position stop the run (another build or strand).
+   id as typed and the report says what that may cost, and `spelling_unconfirmed` says why
+   (`reference_unreachable`, `repeat_exceeds_window`) so a caller never treats that spelling
+   as one the sources were confirmed to hold; reference bases that are not GRCh38's at the
+   position stop the run (another build or strand).
 2. **Place** (prescriptive): map to GRCh37 with the Ensembl assembly mapper for Pan-UK
    Biobank. Zero or several placements, a length change, or an indel on the opposite
    strand is `build_unmappable`; an Ensembl outage is `dataset_unreachable`.
@@ -435,7 +437,7 @@ is an answer and exits 0.
 | 1 | any other failure (a Python traceback): a defect in this skill | report it |
 | 2 | a bad argument, checked before any network call: argparse's own code; also an unknown `--dataset`, an `--outcomes` entry that is not `dataset_id:outcome_id`, a dataset it names that is not curated or that this run does not read, or an outcome its catalog does not list | no |
 | 3 | an outage: the resolver could not read Open Targets or Ensembl, or Ensembl answered with a body that is not JSON (nothing written); or no source answered for any outcome (every read failed; the run is still written, with `result.json` status `error`, so the outage can be inspected) | yes, later |
-| 4 | the query names no variant that can be resolved: not an rsID or variant id, Open Targets has no such variant, a GRCh37 id that does not map to GRCh38, or reference bases that are not GRCh38's; nothing written | no |
+| 4 | the query names no variant that can be resolved: not an rsID or variant id (or a variant id whose chromosome is not 1-22, X, Y, MT; the message states the format required), Open Targets has no such variant, a GRCh37 id that does not map to GRCh38, or reference bases that are not GRCh38's; nothing written | no |
 | 5 | Open Targets refused the resolver's query: a fault in this skill, worth reporting; a retry sends the same query; nothing written | no (report it) |
 
 Run times are measured on the monotonic clock, so a system clock correction during a read

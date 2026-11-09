@@ -1219,6 +1219,8 @@ def test_a_typed_right_aligned_deletion_is_read_under_its_left_aligned_id():
     again = resolve_variant(F508_ALIGNED, reference=_reference())
     assert again.variant_id_grch38 == F508_ALIGNED and again.alignment_note is None
     assert "left-aligned" not in again.resolution_note
+    # Both spellings were confirmed against GRCh38.
+    assert v.spelling_unconfirmed is None and again.spelling_unconfirmed is None
 
 
 def test_a_typed_insertion_is_left_aligned_too():
@@ -1237,19 +1239,22 @@ def test_a_one_base_substitution_never_reads_the_reference():
 
     v = resolve_variant("1_109274968_G_T", reference=never)
     assert v.variant_id_grch38 == "1_109274968_G_T" and v.alignment_note is None
+    assert v.spelling_unconfirmed is None  # nothing to confirm, nothing unconfirmed
 
 
 def test_the_reference_not_reached_runs_the_id_as_typed_and_says_so():
     """An outage of the reference is not a finding about the variant: the lookup runs on the
     id as typed and the answer says what that may cost, never a raise."""
     from snp_phewas_normalize import ReferenceUnreachable
-    from snp_phewas_variant import resolve_variant
+    from snp_phewas_variant import SPELLING_REFERENCE_UNREACHABLE, resolve_variant
 
     def down(*_a, **_k):
         raise ReferenceUnreachable("Ensembl's reference sequence did not answer within 30 s")
 
     v = resolve_variant(F508_TYPED, reference=down)
     assert v.variant_id_grch38 == F508_TYPED and v.anchor_variant_id == F508_TYPED
+    # Said as a field, so a caller never treats the typed spelling as one a run confirmed.
+    assert v.spelling_unconfirmed == SPELLING_REFERENCE_UNREACHABLE
     assert v.alignment_note == (
         "it is a deletion and was looked up as typed, because Ensembl's reference sequence "
         "could not be reached to left-align it; a source that holds it under its left-aligned "
@@ -1280,7 +1285,7 @@ def test_a_position_past_the_chromosome_end_is_refused_without_a_read():
 
 def test_a_repeat_longer_than_the_window_runs_as_typed_and_says_so():
     from snp_phewas_normalize import ReferenceWindow
-    from snp_phewas_variant import resolve_variant
+    from snp_phewas_variant import SPELLING_REPEAT_EXCEEDS_WINDOW, resolve_variant
 
     full = _window("sequence_7_117557001_117560000")
     # A window that starts AT the deletion: aligning needs the base to its left.
@@ -1290,6 +1295,7 @@ def test_a_repeat_longer_than_the_window_runs_as_typed_and_says_so():
     assert v.alignment_note.startswith(
         "it is a deletion and was looked up as typed, because it sits in a repeat longer "
         "than the 2,000 bases read to its left")
+    assert v.spelling_unconfirmed == SPELLING_REPEAT_EXCEEDS_WINDOW
 
 
 def test_a_grch37_deletion_is_mapped_then_left_aligned():
@@ -1420,3 +1426,94 @@ def test_ensembl_map_an_object_with_no_mappings_is_zero_mappings(body):
     from snp_phewas_variant import ensembl_map
 
     assert ensembl_map("GRCh38", "1", 100, 100, "GRCh37", session=_ensembl_session(body)) == []
+
+
+def test_a_grch37_deletion_mapped_with_the_reference_down_is_unconfirmed():
+    """A GRCh37 indel is mapped to GRCh38 and then left-aligned; with the reference down it
+    runs as mapped, unconfirmed, and says so as a field, as a typed GRCh38 id does."""
+    from snp_phewas_normalize import ReferenceUnreachable
+    from snp_phewas_variant import SPELLING_REFERENCE_UNREACHABLE, resolve_variant
+
+    def to_f508(from_build, chrom, start, end, to_build):
+        d = 117559591 - 117199645
+        return [{"original": {"start": start, "end": end},
+                 "mapped": {"coord_system": "chromosome", "seq_region_name": chrom,
+                            "start": start + d, "end": end + d, "strand": 1}}]
+
+    def down(*_a, **_k):
+        raise ReferenceUnreachable("Ensembl's reference sequence did not answer within 30 s")
+
+    v = resolve_variant("7:117199645:TCTT:T", build="GRCh37", map_fn=to_f508, reference=down)
+    assert v.variant_id_grch38 == F508_TYPED
+    assert "was looked up as mapped" in v.alignment_note
+    assert v.spelling_unconfirmed == SPELLING_REFERENCE_UNREACHABLE
+
+
+# --- the chromosome-name rule --------------------------------------------------------------
+
+@pytest.mark.parametrize("typed, want", [
+    ("1_109274968_G_T", ("1", 109274968, "G", "T")),
+    ("chr1:109274968:g:t", ("1", 109274968, "G", "T")),
+    ("MT_3243_A_G", ("MT", 3243, "A", "G")),
+    ("M_3243_A_G", ("MT", 3243, "A", "G")),
+    ("chrM-3243-A-G", ("MT", 3243, "A", "G")),
+    ("m_3243_a_g", ("MT", 3243, "A", "G")),
+    ("chrx_100_A_G", ("X", 100, "A", "G")),
+])
+def test_a_typed_id_reads_its_chromosome_by_the_one_rule(typed, want):
+    """`M` and `chrM` are MT; a chr prefix and lowercase are read."""
+    from snp_phewas_variant import parse_variant_id
+
+    assert parse_variant_id(typed) == want
+
+
+@pytest.mark.parametrize("typed, chrom", [
+    ("0_1_A_G", "0"), ("23_1_A_G", "23"), ("26:1:A:G", "26"), ("99-1-A-G", "99"),
+    ("01_1_A_G", "01"), ("chr23_1_A_G", "chr23"), ("XY_1_A_G", "XY"),
+])
+def test_a_typed_id_whose_chromosome_the_rule_refuses_says_the_format(typed, chrom):
+    """`0_` and `23_`-`99_` were read as chromosomes and looked up; they are refused, and the
+    refusal names the format required."""
+    from snp_phewas_variant import VariantResolutionError, parse_variant_id, resolve_variant
+
+    assert parse_variant_id(typed) is None
+    with pytest.raises(VariantResolutionError) as e:
+        resolve_variant(typed, rsid_resolver=lambda q: pytest.fail("no rsID search"))
+    msg = str(e.value)
+    assert msg.startswith(f"{typed!r} names chromosome {chrom!r}, which is not one we read.")
+    assert "chromosome_position_ref_alt on GRCh38" in msg and "1-22, X, Y or MT" in msg
+
+
+@pytest.mark.parametrize("query", ["23_1_A_G", "not-a-variant"])
+def test_under_grch37_the_refusal_asks_for_grch37(query):
+    from snp_phewas_variant import VariantResolutionError, resolve_variant
+
+    with pytest.raises(VariantResolutionError) as e:
+        resolve_variant(query, build="GRCh37")
+    msg = str(e.value)
+    assert "chromosome_position_ref_alt on GRCh37, for example 1_109817590_G_T" in msg
+    assert "GRCh38" not in msg
+
+
+def test_a_query_that_is_neither_says_the_format():
+    from snp_phewas_variant import VariantResolutionError, resolve_variant
+
+    with pytest.raises(VariantResolutionError) as e:
+        resolve_variant("not-a-variant")
+    assert str(e.value).startswith("'not-a-variant' is neither an rsID (rs123) nor a variant id.")
+    assert "chromosome_position_ref_alt on GRCh38, for example 1_109274968_G_T" in str(e.value)
+
+
+def test_a_typed_mitochondrial_id_resolves_to_mt():
+    from snp_phewas_variant import resolve_variant
+
+    assert resolve_variant("chrM_3243_A_G").variant_id_grch38 == "MT_3243_A_G"
+
+
+def test_an_mt_indel_past_the_chromosome_end_is_refused_under_every_spelling():
+    """The chromosome lengths are keyed by the one name, so `chrM` reads MT's length."""
+    from snp_phewas_variant import VariantResolutionError, resolve_variant
+
+    for typed in ("MT_16600_AT_A", "chrM_16600_AT_A", "m_16600_at_a"):
+        with pytest.raises(VariantResolutionError, match="chromosome MT ends at position 16,569"):
+            resolve_variant(typed, reference=lambda *_a: pytest.fail("read the reference"))

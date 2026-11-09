@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 import requests
 
+from snp_phewas_chromosome import normalize_chromosome
 from snp_phewas_tabix import get_with_retry
 
 ENSEMBL_REST = "https://rest.ensembl.org"
@@ -49,7 +50,8 @@ _BASES = frozenset("ACGTN")
 #: GRCh38 primary-assembly chromosome lengths, read from Ensembl's `/info/assembly/homo_sapiens`
 #: (GRCh38.p14) on 2026-11-06. A window is clamped to them: Ensembl clips a slice past the end
 #: or refuses one that starts past it (HTTP 400), and either read as an outage would turn
-#: every indel near a chromosome end into a false "could not be reached".
+#: every indel near a chromosome end into a false "could not be reached". Keyed by the one
+#: chromosome name (`normalize_chromosome`), so `M` and `chrM` read MT's length.
 CHROMOSOME_LENGTHS: dict[str, int] = {
     "1": 248956422, "2": 242193529, "3": 198295559, "4": 190214555, "5": 181538259,
     "6": 170805979, "7": 159345973, "8": 145138636, "9": 138394717, "10": 133797422,
@@ -122,7 +124,7 @@ def window_bounds(pos: int, ref_len: int, *, chrom: str | None = None, ref: str 
     `pos` (fewer only at the chromosome's start) and the reference allele plus `RIGHT_PAD`
     to the right, never past the chromosome's end when `chrom` is a GRCh38 chromosome. An
     allele that itself runs past the end raises `PositionPastChromosomeEnd`."""
-    length = CHROMOSOME_LENGTHS.get(str(chrom).upper()) if chrom is not None else None
+    length = CHROMOSOME_LENGTHS.get(normalize_chromosome(chrom)) if chrom is not None else None
     last = pos + max(ref_len, 1) - 1
     if length is not None and last > length:
         raise PositionPastChromosomeEnd(str(chrom), pos, ref, length, last)
